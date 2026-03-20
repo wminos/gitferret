@@ -67,11 +67,20 @@ def discover_repos(root: Path) -> list[Path]:
     repos: list[Path] = []
     if not root.is_dir():
         return repos
-    for gitdir in sorted(root.glob("*/.git")):
-        repo = gitdir.parent
-        if repo.is_dir():
-            repos.append(repo)
+    for current, dirs, _files in os.walk(root):
+        dirs.sort()
+        current_path = Path(current)
+        if (current_path / ".git").is_dir():
+            repos.append(current_path)
+            dirs[:] = []
     return repos
+
+
+def repo_display_name(root: Path, repo: Path) -> str:
+    relative = repo.relative_to(root)
+    if str(relative) == ".":
+        return repo.name
+    return relative.as_posix()
 
 
 @dataclass
@@ -101,7 +110,7 @@ class App:
     def __init__(self, root: Path, repos: list[Path]):
         self.root = root
         self.repos = [
-            RepoState(index=i, path=repo, name=repo.name)
+            RepoState(index=i, path=repo, name=repo_display_name(root, repo))
             for i, repo in enumerate(repos)
         ]
         self.slots = [SlotState(index=i) for i in range(MAX_JOBS)]
