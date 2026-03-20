@@ -15,6 +15,14 @@ from pathlib import Path
 
 
 MAX_JOBS = max(1, os.cpu_count() or 1)
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_DIM = "\033[2m"
+ANSI_WHITE = "\033[37m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_CYAN = "\033[36m"
+ANSI_MAGENTA = "\033[35m"
 
 
 def short_text(text: str) -> str:
@@ -88,6 +96,28 @@ def repo_local_branch(repo: Path) -> str:
     if branch.returncode != 0:
         return ""
     return short_text(branch.stdout)
+
+
+def use_ansi_output() -> bool:
+    return sys.stdout.isatty() and sys.stderr.isatty() and "NO_COLOR" not in os.environ
+
+
+def ansi(text: str, *codes: str) -> str:
+    if not codes:
+        return text
+    return f"{''.join(codes)}{text}{ANSI_RESET}"
+
+
+def ansi_for_state(state: str, text: str) -> str:
+    if state == "done":
+        return ansi(text, ANSI_GREEN)
+    if state == "skip":
+        return ansi(text, ANSI_YELLOW)
+    if state == "running":
+        return ansi(text, ANSI_CYAN)
+    if state in {"queued", "idle"}:
+        return ansi(text, ANSI_MAGENTA)
+    return ansi(text, ANSI_WHITE)
 
 
 @dataclass
@@ -455,9 +485,40 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
 
 def print_snapshot(app: App) -> None:
     width = shutil.get_terminal_size(fallback=(120, 24)).columns
-    height = 24
+    height = shutil.get_terminal_size(fallback=(120, 24)).lines
     for _, text, _ in build_view_lines(app, width, height, include_quit_hint=False):
         print(text)
+
+
+def print_final_report(app: App) -> None:
+    with app.lock:
+        repos = sorted(
+            app.repos,
+            key=lambda repo: repo_sort_key(repo, app.sort_mode),
+            reverse=app.sort_reverse,
+        )
+        repos = [repo for repo in repos if repo.state != "done"]
+
+    colored = use_ansi_output()
+    if not repos:
+        message = "All repositories already synced with upstream"
+        print(ansi(message, ANSI_GREEN, ANSI_BOLD) if colored else message)
+        return
+
+    header = f"Git fleet pull | root: {app.root}"
+    print(ansi(header, ANSI_BOLD) if colored else header)
+    print(ansi("-" * 72, ANSI_DIM) if colored else "-" * 72)
+    for repo in repos:
+        branch = repo.branch or "-"
+        line = f"{repo.name} | {branch} | {repo.state} | {repo.detail}"
+        if colored:
+            line = (
+                f"{ansi(repo.name, ANSI_BOLD)} | "
+                f"{ansi(branch, ANSI_MAGENTA)} | "
+                f"{ansi_for_state(repo.state, repo.state)} | "
+                f"{ansi(repo.detail, ANSI_DIM)}"
+            )
+        print(line)
 
 
 def plain_run(app: App) -> None:
@@ -541,7 +602,7 @@ def main(argv: list[str]) -> int:
             except curses.error:
                 plain_run(app)
             else:
-                print_snapshot(app)
+                print_final_report(app)
         else:
             plain_run(app)
     finally:
