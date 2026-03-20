@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import curses
+import os
+import queue
+import subprocess
+import sys
+import shutil
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+MAX_JOBS = max(1, os.cpu_count() or 1)
+
+
+def short_text(text: str) -> str:
+    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+
+
+def explain_dirty(repo: Path) -> str:
+    return f"local changes exist; trying autostash for {repo.name}"
+
+
+def explain_ahead(ahead: int, behind: int) -> str:
+    return f"local commits not pushed ({ahead} ahead, {behind} behind); push or rebase first"
+
+
+def explain_no_upstream() -> str:
+    return "no upstream set; use git branch --set-upstream-to or git push -u"
+
+
+def explain_fetch_failed() -> str:
+    return "fetch failed; check network or remote access and retry"
+
+
+def explain_fast_forward_failed() -> str:
+    return "ff-only pull failed; history diverged or changed during fetch"
+
+
+def explain_autostash_failed() -> str:
+    return "autostash pull failed; stash/review local changes and retry"
+
+
+def autostash_had_conflicts(stderr: str) -> bool:
+    text = stderr.lower()
+    return "autostash" in text and "conflict" in text
+
+
+def explain_up_to_date() -> str:
+    return "already synced with upstream"
+
+
+def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def discover_repos(root: Path) -> list[Path]:
+    repos: list[Path] = []
+    if not root.is_dir():
+        return repos
+    for gitdir in sorted(root.glob("*/.git")):
+        repo = gitdir.parent
+        if repo.is_dir():
+            repos.append(repo)
+    return repos
+
+
+@dataclass
+class RepoState:
+    index: int
+    path: Path
+    name: str
+    state: str = "queued"
+    detail: str = "waiting"
+    branch: str = ""
+    slot: int | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+
+
+@dataclass
+class SlotState:
+    index: int
+    repo_index: int | None = None
+    state: str = "idle"
+    detail: str = "-"
+    branch: str = ""
+    updated_at: float = field(default_factory=time.time)
+
+
+class App:
+    def __init__(self, root: Path, repos: list[Path]):
+        self.root = root
+        self.repos = [
+            RepoState(index=i, path=repo, name=repo.name)
+            for i, repo in enumerate(repos)
+        ]
+        self.slots = [SlotState(index=i) for i in range(MAX_JOBS)]
+        self.todo: queue.Queue[int] = queue.Queue()
+        for i in range(len(self.repos)):
+            self.todo.put(i)
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.finished = 0
+        self.total = len(self.repos)
+        self.tempdir = Path(tempfile.mkdtemp(prefix="pull-all-repos-"))
+        self.has_colors = False
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.tempdir, ignore_errors=True)
+
+    def set_repo(self, idx: int, **changes: object) -> None:
+        with self.lock:
+            repo = self.repos[idx]
+            for key, value in changes.items():
+                setattr(repo, key, value)
+
+    def set_slot(self, idx: int, **changes: object) -> None:
+        with self.lock:
+            slot = self.slots[idx]
+            for key, value in changes.items():
+                setattr(slot, key, value)
+            slot.updated_at = time.time()
+
+    def mark_finished(self, idx: int, success: bool) -> None:
+        with self.lock:
+            self.finished += 1
+            self.repos[idx].finished_at = time.time()
+            if not success and self.repos[idx].state == "running":
+                self.repos[idx].state = "skip"
+
+    def worker(self, slot_idx: int) -> None:
+        while not self.stop.is_set():
+            try:
+                repo_idx = self.todo.get_nowait()
+            except queue.Empty:
+                break
+
+            try:
+                repo = self.repos[repo_idx]
+                self.set_slot(slot_idx, repo_index=repo_idx, state="running", detail="starting", branch=repo.name)
+                self.set_repo(repo_idx, state="running", detail="scanning", slot=slot_idx, started_at=time.time())
+
+                status = run_git(repo.path, "status", "--short", "--branch")
+                status_lines = status.stdout.splitlines()
+                branch_line = short_text(status_lines[0]) if status_lines else ""
+                if branch_line:
+                    self.set_repo(repo_idx, branch=branch_line, detail=branch_line)
+                    self.set_slot(slot_idx, branch=branch_line, detail="scanning")
+
+                probe = run_git(repo.path, "rev-parse", "--is-inside-work-tree")
+                if probe.returncode != 0 or short_text(probe.stdout) != "true":
+                    detail = "not a git work tree; skip"
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+                    continue
+
+                dirty = run_git(repo.path, "status", "--porcelain")
+                has_dirty_worktree = bool(short_text(dirty.stdout))
+                if has_dirty_worktree:
+                    detail = explain_dirty(repo.path)
+                    self.set_repo(repo_idx, detail=detail)
+                    self.set_slot(slot_idx, detail=detail)
+
+                upstream = run_git(repo.path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+                upstream_ref = short_text(upstream.stdout)
+                if upstream.returncode != 0 or not upstream_ref:
+                    detail = explain_no_upstream()
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+                    continue
+
+                self.set_repo(repo_idx, detail="fetching upstream")
+                self.set_slot(slot_idx, detail="fetching upstream")
+                fetch = run_git(repo.path, "fetch", "--prune", "--quiet")
+                if fetch.returncode != 0:
+                    detail = explain_fetch_failed()
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+                    continue
+
+                compare = run_git(repo.path, "rev-list", "--left-right", "--count", f"HEAD...{upstream_ref}")
+                if compare.returncode != 0:
+                    detail = "compare failed; retry later"
+                    if compare.stderr:
+                        detail = f"{detail}: {short_text(compare.stderr).split(':', 1)[0]}"
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+                    continue
+
+                parts = short_text(compare.stdout).split()
+                ahead = behind = 0
+                if len(parts) >= 2:
+                    ahead, behind = int(parts[0]), int(parts[1])
+
+                if ahead != 0:
+                    detail = explain_ahead(ahead, behind)
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+                    continue
+
+                if behind == 0:
+                    detail = explain_up_to_date()
+                    if has_dirty_worktree:
+                        detail = f"{detail}; local changes preserved"
+                    self.set_repo(repo_idx, state="done", detail=detail)
+                    self.set_slot(slot_idx, state="done", detail=detail)
+                    self.mark_finished(repo_idx, success=True)
+                    continue
+
+                if has_dirty_worktree:
+                    pulling_detail = f"pulling with autostash ({behind} behind)"
+                else:
+                    pulling_detail = f"pulling ff-only ({behind} behind)"
+                self.set_repo(repo_idx, detail=pulling_detail)
+                self.set_slot(slot_idx, detail=pulling_detail)
+                pull_args = ["pull", "--ff-only"]
+                if has_dirty_worktree:
+                    pull_args.append("--autostash")
+                pull = run_git(repo.path, *pull_args)
+                if pull.returncode == 0 and not autostash_had_conflicts(pull.stderr):
+                    detail = "pulled fast-forward; now synced"
+                    if has_dirty_worktree:
+                        detail = "pulled with autostash; now synced"
+                    self.set_repo(repo_idx, state="done", detail=detail)
+                    self.set_slot(slot_idx, state="done", detail=detail)
+                    self.mark_finished(repo_idx, success=True)
+                else:
+                    detail = explain_autostash_failed() if has_dirty_worktree else explain_fast_forward_failed()
+                    if pull.returncode == 0 and autostash_had_conflicts(pull.stderr):
+                        detail = f"{detail}: autostash reapply conflicted"
+                    if pull.stderr:
+                        detail = f"{detail}: {short_text(pull.stderr).split(':', 1)[0]}"
+                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_slot(slot_idx, state="skip", detail=detail)
+                    self.mark_finished(repo_idx, success=False)
+            except Exception as exc:  # noqa: BLE001
+                detail = f"error: {short_text(str(exc))}"
+                self.set_repo(repo_idx, state="skip", detail=detail)
+                self.set_slot(slot_idx, state="skip", detail=detail)
+                self.mark_finished(repo_idx, success=False)
+            finally:
+                self.todo.task_done()
+
+        self.set_slot(slot_idx, repo_index=None, state="idle", detail="-", branch="")
+
+
+def truncate(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "…"
+
+
+def compute_column_widths(width: int, repos: list[RepoState]) -> tuple[int, int]:
+    index_width = 4
+    state_width = 8
+    spaces = 3
+    available = max(0, width - index_width - state_width - spaces)
+
+    if available <= 0:
+        return 0, 0
+
+    max_name_len = max((len(repo.name) for repo in repos), default=12)
+    min_detail_width = min(60, max(24, width // 2))
+
+    name_width = min(max_name_len, max(12, available - min_detail_width))
+    if available - name_width < min_detail_width:
+        name_width = max(12, available - min_detail_width)
+    name_width = min(name_width, available)
+    detail_width = max(0, available - name_width)
+
+    if detail_width < 1:
+        detail_width = 1
+        name_width = max(12, available - detail_width)
+
+    return name_width, detail_width
+
+
+def style_for_state(state: str) -> int:
+    if state in {"done"}:
+        return curses.color_pair(2)
+    if state in {"skip"}:
+        return curses.color_pair(3)
+    if state in {"running"}:
+        return curses.color_pair(4)
+    if state in {"queued", "idle"}:
+        return curses.color_pair(5)
+    return curses.color_pair(1)
+
+
+def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) -> None:
+    if y < 0:
+        return
+    try:
+        stdscr.move(y, 0)
+        stdscr.clrtoeol()
+        stdscr.addnstr(y, 0, truncate(text, width), width, attr)
+    except curses.error:
+        return
+
+
+def draw(stdscr: curses.window, app: App) -> None:
+    height, width = stdscr.getmaxyx()
+    for y, text, attr in build_view_lines(app, width, height, include_quit_hint=True):
+        line(stdscr, y, text, width, attr)
+    stdscr.noutrefresh()
+    curses.doupdate()
+
+
+def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bool) -> list[tuple[int, str, int]]:
+    with app.lock:
+        repos = list(app.repos)
+        slots = list(app.slots)
+        queued = sum(1 for repo in repos if repo.state == "queued")
+        running = sum(1 for repo in repos if repo.state == "running")
+        done = sum(1 for repo in repos if repo.state == "done")
+        skipped = sum(1 for repo in repos if repo.state == "skip")
+
+    name_width, detail_width = compute_column_widths(width, repos)
+
+    lines: list[tuple[int, str, int]] = []
+    y = 0
+    lines.append((y, f"Git fleet pull | max jobs: {MAX_JOBS} | root: {app.root}", curses.A_BOLD))
+    y += 1
+    lines.append((y, "-" * max(0, width - 1), 0))
+    y += 1
+    lines.append((y, "Workers", curses.A_BOLD))
+    y += 1
+
+    for slot in slots:
+        if slot.repo_index is None:
+            text = f"[{slot.index + 1:02d}] {'-':<{name_width}} {'idle':<8} {'-':<{detail_width}}"
+            attr = style_for_state("idle")
+        else:
+            repo = repos[slot.repo_index]
+            name = truncate(repo.name, name_width)
+            detail = truncate(repo.detail, detail_width)
+            text = f"[{slot.index + 1:02d}] {name:<{name_width}} {slot.state:<8} {detail:<{detail_width}}"
+            attr = style_for_state(slot.state)
+        lines.append((y, text, attr))
+        y += 1
+
+    lines.append((y, "-" * max(0, width - 1), 0))
+    y += 1
+    lines.append((y, "Repos", curses.A_BOLD))
+    y += 1
+
+    for repo in repos:
+        name = truncate(repo.name, name_width)
+        detail = truncate(repo.detail, detail_width)
+        text = f"[{repo.index + 1:02d}] {name:<{name_width}} {repo.state:<8} {detail:<{detail_width}}"
+        if y >= height - 2:
+            break
+        lines.append((y, text, style_for_state(repo.state)))
+        y += 1
+
+    if height >= 2:
+        lines.append((height - 2, "-" * max(0, width - 1), 0))
+
+    summary = f"Summary: queued={queued} running={running} done={done} skip={skipped}"
+    if include_quit_hint:
+        summary += "  q:quit only"
+    lines.append((height - 1, summary, curses.A_DIM))
+    return lines
+
+
+def print_snapshot(app: App) -> None:
+    width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    height = 24
+    for _, text, _ in build_view_lines(app, width, height, include_quit_hint=False):
+        print(text)
+
+
+def plain_run(app: App) -> None:
+    workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    with app.lock:
+        for repo in app.repos:
+            print(f"{repo.name}: {repo.state} - {repo.detail}")
+
+
+def curses_run(app: App) -> None:
+    def _main(stdscr: curses.window) -> None:
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_WHITE, -1)
+            curses.init_pair(2, curses.COLOR_GREEN, -1)
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+            curses.init_pair(4, curses.COLOR_CYAN, -1)
+            curses.init_pair(5, curses.COLOR_MAGENTA, -1)
+            app.has_colors = True
+        stdscr.nodelay(True)
+        stdscr.keypad(True)
+
+        workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
+        for worker in workers:
+            worker.start()
+
+        try:
+            while True:
+                draw(stdscr, app)
+
+                ch = stdscr.getch()
+                if ch in (ord("q"), ord("Q")):
+                    app.stop.set()
+                    break
+
+                time.sleep(0.08)
+        finally:
+            app.stop.set()
+            for worker in workers:
+                worker.join(timeout=1.0)
+            draw(stdscr, app)
+            time.sleep(0.2)
+
+    curses.wrapper(_main)
+
+
+def main(argv: list[str]) -> int:
+    root = Path(argv[1] if len(argv) > 1 else ".").expanduser().resolve()
+    if not root.is_dir():
+        print(f"root not found: {root}", file=sys.stderr)
+        return 1
+
+    repos = discover_repos(root)
+    if not repos:
+        print(f"no git repositories found under: {root}")
+        return 0
+
+    app = App(root, repos)
+    try:
+        if sys.stdout.isatty() and sys.stderr.isatty():
+            try:
+                curses_run(app)
+            except curses.error:
+                plain_run(app)
+            else:
+                print_snapshot(app)
+        else:
+            plain_run(app)
+    finally:
+        app.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
