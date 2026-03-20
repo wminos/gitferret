@@ -73,7 +73,7 @@ def discover_repos(root: Path) -> list[Path]:
         if (current_path / ".git").is_dir():
             repos.append(current_path)
             dirs[:] = []
-    return repos
+    return sorted(repos, key=lambda repo: repo.relative_to(root).as_posix())
 
 
 def repo_display_name(root: Path, repo: Path) -> str:
@@ -81,6 +81,13 @@ def repo_display_name(root: Path, repo: Path) -> str:
     if str(relative) == ".":
         return repo.name
     return relative.as_posix()
+
+
+def repo_local_branch(repo: Path) -> str:
+    branch = run_git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch.returncode != 0:
+        return ""
+    return short_text(branch.stdout)
 
 
 @dataclass
@@ -123,6 +130,8 @@ class App:
         self.total = len(self.repos)
         self.tempdir = Path(tempfile.mkdtemp(prefix="pull-all-repos-"))
         self.has_colors = False
+        self.sort_mode = "path"
+        self.sort_reverse = False
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -139,6 +148,16 @@ class App:
             for key, value in changes.items():
                 setattr(slot, key, value)
             slot.updated_at = time.time()
+
+    def cycle_sort_mode(self) -> None:
+        with self.lock:
+            modes = ("path", "state", "branch")
+            current = modes.index(self.sort_mode)
+            self.sort_mode = modes[(current + 1) % len(modes)]
+
+    def toggle_sort_reverse(self) -> None:
+        with self.lock:
+            self.sort_reverse = not self.sort_reverse
 
     def mark_finished(self, idx: int, success: bool) -> None:
         with self.lock:
@@ -159,13 +178,6 @@ class App:
                 self.set_slot(slot_idx, repo_index=repo_idx, state="running", detail="starting", branch=repo.name)
                 self.set_repo(repo_idx, state="running", detail="scanning", slot=slot_idx, started_at=time.time())
 
-                status = run_git(repo.path, "status", "--short", "--branch")
-                status_lines = status.stdout.splitlines()
-                branch_line = short_text(status_lines[0]) if status_lines else ""
-                if branch_line:
-                    self.set_repo(repo_idx, branch=branch_line, detail=branch_line)
-                    self.set_slot(slot_idx, branch=branch_line, detail="scanning")
-
                 probe = run_git(repo.path, "rev-parse", "--is-inside-work-tree")
                 if probe.returncode != 0 or short_text(probe.stdout) != "true":
                     detail = "not a git work tree; skip"
@@ -173,6 +185,11 @@ class App:
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
+
+                branch_name = repo_local_branch(repo.path)
+                if branch_name:
+                    self.set_repo(repo_idx, branch=branch_name)
+                    self.set_slot(slot_idx, branch=branch_name)
 
                 dirty = run_git(repo.path, "status", "--porcelain")
                 has_dirty_worktree = bool(short_text(dirty.stdout))
@@ -303,6 +320,28 @@ def compute_column_widths(width: int, repos: list[RepoState]) -> tuple[int, int]
     return name_width, detail_width
 
 
+def compute_branch_width(width: int, repos: list[RepoState]) -> int:
+    max_branch_len = max((len(repo.branch) for repo in repos), default=8)
+    return max(8, min(24, max_branch_len))
+
+
+def compute_repo_row_widths(width: int, repos: list[RepoState]) -> tuple[int, int, int]:
+    index_width = 4
+    state_width = 8
+    spaces = 5
+    available = max(0, width - index_width - state_width - spaces)
+    if available <= 0:
+        return 0, 0, 0
+
+    branch_width = compute_branch_width(width, repos)
+    branch_width = min(branch_width, max(8, available // 4))
+    remaining = max(0, available - branch_width)
+    name_width, detail_width = compute_column_widths(remaining + 3, repos)
+    if name_width + detail_width > remaining:
+        detail_width = max(0, remaining - name_width)
+    return name_width, branch_width, detail_width
+
+
 def style_for_state(state: str) -> int:
     if state in {"done"}:
         return curses.color_pair(2)
@@ -313,6 +352,22 @@ def style_for_state(state: str) -> int:
     if state in {"queued", "idle"}:
         return curses.color_pair(5)
     return curses.color_pair(1)
+
+
+def sort_label(mode: str) -> str:
+    if mode == "state":
+        return "state"
+    if mode == "branch":
+        return "branch"
+    return "path"
+
+
+def repo_sort_key(repo: RepoState, mode: str) -> tuple[str, str]:
+    if mode == "state":
+        return (repo.state, repo.name)
+    if mode == "branch":
+        return (repo.branch or "", repo.name)
+    return (repo.name, repo.state)
 
 
 def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) -> None:
@@ -336,18 +391,22 @@ def draw(stdscr: curses.window, app: App) -> None:
 
 def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bool) -> list[tuple[int, str, int]]:
     with app.lock:
-        repos = list(app.repos)
+        repo_indexed = list(app.repos)
         slots = list(app.slots)
-        queued = sum(1 for repo in repos if repo.state == "queued")
-        running = sum(1 for repo in repos if repo.state == "running")
-        done = sum(1 for repo in repos if repo.state == "done")
-        skipped = sum(1 for repo in repos if repo.state == "skip")
+        sort_mode = app.sort_mode
+        sort_reverse = app.sort_reverse
+        repos = sorted(repo_indexed, key=lambda repo: repo_sort_key(repo, sort_mode), reverse=sort_reverse)
+        queued = sum(1 for repo in repo_indexed if repo.state == "queued")
+        running = sum(1 for repo in repo_indexed if repo.state == "running")
+        done = sum(1 for repo in repo_indexed if repo.state == "done")
+        skipped = sum(1 for repo in repo_indexed if repo.state == "skip")
 
-    name_width, detail_width = compute_column_widths(width, repos)
+    name_width, branch_width, detail_width = compute_repo_row_widths(width, repos)
 
     lines: list[tuple[int, str, int]] = []
     y = 0
-    lines.append((y, f"Git fleet pull | max jobs: {MAX_JOBS} | root: {app.root}", curses.A_BOLD))
+    direction = "desc" if sort_reverse else "asc"
+    lines.append((y, f"Git fleet pull | max jobs: {MAX_JOBS} | root: {app.root} | sort: {sort_label(sort_mode)} {direction} | r:reverse", curses.A_BOLD))
     y += 1
     lines.append((y, "-" * max(0, width - 1), 0))
     y += 1
@@ -356,13 +415,14 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
 
     for slot in slots:
         if slot.repo_index is None:
-            text = f"[{slot.index + 1:02d}] {'-':<{name_width}} {'idle':<8} {'-':<{detail_width}}"
+            text = f"[{slot.index + 1:02d}] {'-':<{name_width}} {'-':<{branch_width}} {'idle':<8} {'-':<{detail_width}}"
             attr = style_for_state("idle")
         else:
-            repo = repos[slot.repo_index]
+            repo = repo_indexed[slot.repo_index]
             name = truncate(repo.name, name_width)
+            branch = truncate(repo.branch, branch_width)
             detail = truncate(repo.detail, detail_width)
-            text = f"[{slot.index + 1:02d}] {name:<{name_width}} {slot.state:<8} {detail:<{detail_width}}"
+            text = f"[{slot.index + 1:02d}] {name:<{name_width}} {branch:<{branch_width}} {slot.state:<8} {detail:<{detail_width}}"
             attr = style_for_state(slot.state)
         lines.append((y, text, attr))
         y += 1
@@ -374,8 +434,9 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
 
     for repo in repos:
         name = truncate(repo.name, name_width)
+        branch = truncate(repo.branch, branch_width)
         detail = truncate(repo.detail, detail_width)
-        text = f"[{repo.index + 1:02d}] {name:<{name_width}} {repo.state:<8} {detail:<{detail_width}}"
+        text = f"[{repo.index + 1:02d}] {name:<{name_width}} {branch:<{branch_width}} {repo.state:<8} {detail:<{detail_width}}"
         if y >= height - 2:
             break
         lines.append((y, text, style_for_state(repo.state)))
@@ -386,7 +447,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
 
     summary = f"Summary: queued={queued} running={running} done={done} skip={skipped}"
     if include_quit_hint:
-        summary += "  q:quit only"
+        summary += "  s:sort r:reverse q:quit"
     lines.append((height - 1, summary, curses.A_DIM))
     return lines
 
@@ -437,6 +498,12 @@ def curses_run(app: App) -> None:
                 draw(stdscr, app)
 
                 ch = stdscr.getch()
+                if ch == ord("s"):
+                    app.cycle_sort_mode()
+                    continue
+                if ch == ord("r"):
+                    app.toggle_sort_reverse()
+                    continue
                 if ch in (ord("q"), ord("Q")):
                     app.stop.set()
                     break
