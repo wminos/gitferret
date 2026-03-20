@@ -383,6 +383,7 @@ def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) ->
 
 def draw(stdscr: curses.window, app: App) -> None:
     height, width = stdscr.getmaxyx()
+    stdscr.erase()
     for y, text, attr in build_view_lines(app, width, height, include_quit_hint=True):
         line(stdscr, y, text, width, attr)
     stdscr.noutrefresh()
@@ -498,6 +499,8 @@ def curses_run(app: App) -> None:
                 draw(stdscr, app)
 
                 ch = stdscr.getch()
+                if ch == curses.KEY_RESIZE:
+                    continue
                 if ch == ord("s"):
                     app.cycle_sort_mode()
                     continue
