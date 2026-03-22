@@ -201,6 +201,7 @@ class App:
         self.tempdir = Path(tempfile.mkdtemp(prefix="pull-all-repos-"))
         self.has_colors = False
         self.repo_scroll = 0
+        self.shutdown_status = ""
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -513,6 +514,17 @@ def dim_suffix(stdscr: curses.window, y: int, prefix: str, suffix: str, width: i
         return
 
 
+def right_text(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) -> None:
+    if width <= 0 or not text:
+        return
+    clipped = truncate(text, width)
+    x = max(0, width - len(clipped))
+    try:
+        stdscr.addnstr(y, x, clipped, width - x, attr)
+    except curses.error:
+        return
+
+
 def draw_scrollbar(
     stdscr: curses.window,
     width: int,
@@ -557,6 +569,8 @@ def draw(stdscr: curses.window, app: App) -> None:
         content_width = max(0, width - 1)
         for y, text, attr in build_view_lines(app, content_width, height, include_quit_hint=True):
             line(stdscr, y, text, content_width, attr)
+            if y == 0 and app.shutdown_status:
+                right_text(stdscr, y, app.shutdown_status, content_width, curses.A_BOLD)
             if text.startswith("Workers "):
                 dim_suffix(stdscr, y, "Workers", text[len("Workers") :], content_width)
             elif text.startswith("Repos total: "):
@@ -702,6 +716,9 @@ def plain_run(app: App) -> None:
 
 def curses_run(app: App) -> None:
     ui_poll_interval = 0.02
+    worker_join_timeout = 10.0
+    shutdown_frames = "|/-\\"
+    shutdown_frame_interval = 0.1
 
     def _main(stdscr: curses.window) -> None:
         try:
@@ -774,8 +791,27 @@ def curses_run(app: App) -> None:
                 time.sleep(ui_poll_interval)
         finally:
             app.stop.set()
-            for worker in workers:
-                worker.join(timeout=1.0)
+            shutdown_deadline = time.monotonic() + worker_join_timeout
+            shutdown_frame_index = 0
+            next_shutdown_frame_at = time.monotonic()
+            while True:
+                alive_workers = [worker for worker in workers if worker.is_alive()]
+                now = time.monotonic()
+                if now >= next_shutdown_frame_at:
+                    app.shutdown_status = f"{shutdown_frames[shutdown_frame_index % len(shutdown_frames)]} stopping safely"
+                    shutdown_frame_index += 1
+                    next_shutdown_frame_at = now + shutdown_frame_interval
+                    try:
+                        draw(stdscr, app)
+                    except curses.error:
+                        pass
+                if not alive_workers or time.monotonic() >= shutdown_deadline:
+                    break
+                remaining = shutdown_deadline - time.monotonic()
+                until_next_frame = max(0.0, next_shutdown_frame_at - time.monotonic())
+                join_slice = min(ui_poll_interval, remaining, until_next_frame if until_next_frame > 0 else ui_poll_interval)
+                for worker in alive_workers:
+                    worker.join(timeout=join_slice)
             try:
                 draw(stdscr, app)
             except curses.error:
