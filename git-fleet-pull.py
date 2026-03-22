@@ -162,6 +162,7 @@ class App:
         self.has_colors = False
         self.sort_mode = "path"
         self.sort_reverse = False
+        self.repo_scroll = 0
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -188,6 +189,22 @@ class App:
     def toggle_sort_reverse(self) -> None:
         with self.lock:
             self.sort_reverse = not self.sort_reverse
+
+    def scroll_repos(self, delta: int, visible_rows: int) -> None:
+        with self.lock:
+            if visible_rows <= 0:
+                self.repo_scroll = 0
+                return
+            max_scroll = max(0, len(self.repos) - visible_rows)
+            self.repo_scroll = max(0, min(self.repo_scroll + delta, max_scroll))
+
+    def jump_repos(self, position: int, visible_rows: int) -> None:
+        with self.lock:
+            if visible_rows <= 0:
+                self.repo_scroll = 0
+                return
+            max_scroll = max(0, len(self.repos) - visible_rows)
+            self.repo_scroll = max(0, min(position, max_scroll))
 
     def mark_finished(self, idx: int, success: bool) -> None:
         with self.lock:
@@ -392,6 +409,16 @@ def sort_label(mode: str) -> str:
     return "path"
 
 
+def repo_list_visible_rows(height: int, slot_count: int) -> int:
+    repo_start = 1  # title
+    repo_start += 1  # separator
+    repo_start += 1  # workers heading
+    repo_start += slot_count
+    repo_start += 1  # separator
+    repo_start += 1  # repos heading
+    return max(0, height - repo_start - 2)  # bottom separator + summary
+
+
 def repo_sort_key(repo: RepoState, mode: str) -> tuple[str, str]:
     if mode == "state":
         return (repo.state, repo.name)
@@ -413,6 +440,8 @@ def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) ->
 
 def draw(stdscr: curses.window, app: App) -> None:
     height, width = stdscr.getmaxyx()
+    visible_rows = repo_list_visible_rows(height, len(app.slots))
+    app.scroll_repos(0, visible_rows)
     stdscr.erase()
     for y, text, attr in build_view_lines(app, width, height, include_quit_hint=True):
         line(stdscr, y, text, width, attr)
@@ -426,6 +455,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         slots = list(app.slots)
         sort_mode = app.sort_mode
         sort_reverse = app.sort_reverse
+        repo_scroll = app.repo_scroll
         repos = sorted(repo_indexed, key=lambda repo: repo_sort_key(repo, sort_mode), reverse=sort_reverse)
         queued = sum(1 for repo in repo_indexed if repo.state == "queued")
         running = sum(1 for repo in repo_indexed if repo.state == "running")
@@ -433,11 +463,20 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         skipped = sum(1 for repo in repo_indexed if repo.state == "skip")
 
     name_width, branch_width, detail_width = compute_repo_row_widths(width, repos)
+    visible_rows = repo_list_visible_rows(height, len(slots))
+    max_scroll = max(0, len(repos) - visible_rows)
+    repo_scroll = min(max(repo_scroll, 0), max_scroll)
 
     lines: list[tuple[int, str, int]] = []
     y = 0
     direction = "desc" if sort_reverse else "asc"
-    lines.append((y, f"Git fleet pull | max jobs: {MAX_JOBS} | root: {app.root} | sort: {sort_label(sort_mode)} {direction} | r:reverse", curses.A_BOLD))
+    header = f"Git fleet pull | max jobs: {MAX_JOBS} | root: {app.root} | sort: {sort_label(sort_mode)} {direction} | r:reverse"
+    if max_scroll > 0 and visible_rows > 0:
+        repo_end = min(len(repos), repo_scroll + visible_rows)
+        header += f" | repos: {repo_scroll + 1}-{repo_end}/{len(repos)}"
+    elif max_scroll > 0:
+        header += f" | repos: {len(repos)} total; resize to view"
+    lines.append((y, header, curses.A_BOLD))
     y += 1
     lines.append((y, "-" * max(0, width - 1), 0))
     y += 1
@@ -463,13 +502,12 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     lines.append((y, "Repos", curses.A_BOLD))
     y += 1
 
-    for repo in repos:
+    visible_repos = repos[repo_scroll : repo_scroll + visible_rows] if visible_rows > 0 else []
+    for repo in visible_repos:
         name = truncate(repo.name, name_width)
         branch = truncate(repo.branch, branch_width)
         detail = truncate(repo.detail, detail_width)
         text = f"[{repo.index + 1:02d}] {name:<{name_width}} {branch:<{branch_width}} {repo.state:<8} {detail:<{detail_width}}"
-        if y >= height - 2:
-            break
         lines.append((y, text, style_for_state(repo.state)))
         y += 1
 
@@ -477,6 +515,8 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         lines.append((height - 2, "-" * max(0, width - 1), 0))
 
     summary = f"Summary: queued={queued} running={running} done={done} skip={skipped}"
+    if max_scroll > 0:
+        summary += "  scroll: up/down, page up/down, home/end, mouse wheel"
     if include_quit_hint:
         summary += "  s:sort r:reverse q:quit"
     lines.append((height - 1, summary, curses.A_DIM))
@@ -550,6 +590,11 @@ def curses_run(app: App) -> None:
             app.has_colors = True
         stdscr.nodelay(True)
         stdscr.keypad(True)
+        try:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+            curses.mouseinterval(0)
+        except curses.error:
+            pass
 
         workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
         for worker in workers:
@@ -557,16 +602,51 @@ def curses_run(app: App) -> None:
 
         try:
             while True:
+                height, _width = stdscr.getmaxyx()
+                visible_rows = repo_list_visible_rows(height, len(app.slots))
+                app.scroll_repos(0, visible_rows)
                 draw(stdscr, app)
 
                 ch = stdscr.getch()
                 if ch == curses.KEY_RESIZE:
                     continue
+                if ch == curses.KEY_MOUSE:
+                    try:
+                        _mouse_id, _mx, my, _mz, bstate = curses.getmouse()
+                    except curses.error:
+                        continue
+                    repo_start = 1 + 1 + 1 + len(app.slots) + 1 + 1
+                    repo_end = repo_start + visible_rows
+                    if repo_start <= my < repo_end:
+                        if bstate & getattr(curses, "BUTTON4_PRESSED", 0):
+                            app.scroll_repos(-1, visible_rows)
+                            continue
+                        if bstate & getattr(curses, "BUTTON5_PRESSED", 0):
+                            app.scroll_repos(1, visible_rows)
+                            continue
                 if ch == ord("s"):
                     app.cycle_sort_mode()
                     continue
                 if ch == ord("r"):
                     app.toggle_sort_reverse()
+                    continue
+                if ch in (curses.KEY_UP, ord("k")):
+                    app.scroll_repos(-1, visible_rows)
+                    continue
+                if ch in (curses.KEY_DOWN, ord("j")):
+                    app.scroll_repos(1, visible_rows)
+                    continue
+                if ch in (curses.KEY_PPAGE,):
+                    app.scroll_repos(-(max(1, visible_rows - 1)), visible_rows)
+                    continue
+                if ch in (curses.KEY_NPAGE,):
+                    app.scroll_repos(max(1, visible_rows - 1), visible_rows)
+                    continue
+                if ch in (curses.KEY_HOME, ord("g")):
+                    app.jump_repos(0, visible_rows)
+                    continue
+                if ch in (curses.KEY_END, ord("G")):
+                    app.jump_repos(len(app.repos), visible_rows)
                     continue
                 if ch in (ord("q"), ord("Q")):
                     app.stop.set()
