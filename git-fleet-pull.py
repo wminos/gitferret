@@ -531,6 +531,32 @@ def right_text(stdscr: curses.window, y: int, text: str, width: int, attr: int =
         return
 
 
+def draw_centered_popup(stdscr: curses.window, width: int, height: int, lines: list[tuple[str, int]]) -> None:
+    if not lines:
+        return
+    content_width = max(len(text) for text, _attr in lines)
+    popup_width = min(width - 2, content_width + 2) if width >= 4 else width
+    popup_height = min(height - 2, len(lines) + 2) if height >= 4 else height
+    if popup_width <= 0 or popup_height <= 0:
+        return
+    start_y = max(0, (height - popup_height) // 2)
+    start_x = max(0, (width - popup_width) // 2)
+    try:
+        for row in range(popup_height):
+            stdscr.addnstr(start_y + row, start_x, " " * popup_width, popup_width, curses.A_REVERSE)
+        visible_rows = max(0, popup_height - 2)
+        for idx, (text, attr) in enumerate(lines[:visible_rows]):
+            stdscr.addnstr(
+                start_y + 1 + idx,
+                start_x + 1,
+                truncate(text, max(0, popup_width - 2)),
+                max(0, popup_width - 2),
+                curses.A_REVERSE | attr,
+            )
+    except curses.error:
+        return
+
+
 def draw_help_popup(stdscr: curses.window, width: int, height: int) -> None:
     title = "help"
     shortcuts = [
@@ -546,34 +572,8 @@ def draw_help_popup(stdscr: curses.window, width: int, height: int) -> None:
     key_width = max(len(key) for key, _ in shortcuts)
     desc_width = max(len(desc) for _, desc in shortcuts)
     body_width = key_width + 3 + desc_width
-    popup_width = min(width - 4, max(len(title), body_width) + 6) if width >= 8 else width
-    popup_height = min(height - 2, len(shortcuts) + 3) if height >= 4 else height
-    if popup_width <= 0 or popup_height <= 0:
-        return
-    start_y = max(0, (height - popup_height) // 2)
-    start_x = max(0, (width - popup_width) // 2)
-    try:
-        for row in range(popup_height):
-            stdscr.addnstr(start_y + row, start_x, " " * popup_width, popup_width, curses.A_REVERSE)
-        stdscr.addnstr(
-            start_y + 1,
-            start_x + 2,
-            truncate(title, max(0, popup_width - 4)),
-            max(0, popup_width - 4),
-            curses.A_REVERSE | curses.A_BOLD,
-        )
-        visible_rows = max(0, popup_height - 3)
-        for idx, (key, desc) in enumerate(shortcuts[:visible_rows]):
-            text = f"{key:<{key_width}} | {desc}"
-            stdscr.addnstr(
-                start_y + 2 + idx,
-                start_x + 2,
-                truncate(text, max(0, popup_width - 4)),
-                max(0, popup_width - 4),
-                curses.A_REVERSE,
-            )
-    except curses.error:
-        return
+    rows = [(title, curses.A_BOLD)] + [(f"{key:<{key_width}} | {desc}", 0) for key, desc in shortcuts]
+    draw_centered_popup(stdscr, width, height, rows)
 
 
 def draw_scrollbar(
@@ -620,8 +620,6 @@ def draw(stdscr: curses.window, app: App) -> None:
         content_width = max(0, width - 1)
         for y, text, attr in build_view_lines(app, content_width, height, include_quit_hint=True):
             line(stdscr, y, text, content_width, attr)
-            if y == 0 and app.shutdown_status:
-                right_text(stdscr, y, app.shutdown_status, content_width, curses.A_BOLD)
             if text.startswith("Workers "):
                 dim_suffix(stdscr, y, "Workers", text[len("Workers") :], content_width)
             elif text.startswith("Repos total: "):
@@ -635,7 +633,9 @@ def draw(stdscr: curses.window, app: App) -> None:
             len(app.repos),
             repo_section_top(len(app.slots), app.configs.show_workers),
         )
-        if app.show_help:
+        if app.shutdown_status:
+            draw_centered_popup(stdscr, content_width, height, [(app.shutdown_status, curses.A_BOLD)])
+        elif app.show_help:
             draw_help_popup(stdscr, content_width, height)
         stdscr.noutrefresh()
         curses.doupdate()
@@ -857,7 +857,7 @@ def curses_run(app: App) -> None:
                 alive_workers = [worker for worker in workers if worker.is_alive()]
                 now = time.monotonic()
                 if now >= next_shutdown_frame_at:
-                    app.shutdown_status = f"{shutdown_frames[shutdown_frame_index % len(shutdown_frames)]} stopping safely"
+                    app.shutdown_status = f"{shutdown_frames[shutdown_frame_index % len(shutdown_frames)]} waiting for jobs to finish"
                     shutdown_frame_index += 1
                     next_shutdown_frame_at = now + shutdown_frame_interval
                     try:
