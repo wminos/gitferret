@@ -409,15 +409,24 @@ def sort_label(mode: str) -> str:
     return "path"
 
 
-def repo_list_visible_rows(height: int, slot_count: int) -> int:
+def repo_section_top(slot_count: int) -> int:
     repo_start = 1  # title
     repo_start += 1  # separator
     repo_start += 1  # workers heading
     repo_start += slot_count
     repo_start += 1  # separator
     repo_start += 1  # repos heading
-    return max(0, height - repo_start - 2)  # bottom separator + summary
+    return repo_start
 
+
+def repo_list_visible_rows(height: int, slot_count: int) -> int:
+    return max(0, height - repo_section_top(slot_count) - 2)  # bottom separator + summary
+
+
+def page_scroll_step(visible_rows: int) -> int:
+    if visible_rows <= 0:
+        return 1
+    return max(1, visible_rows - 1)
 
 def repo_sort_key(repo: RepoState, mode: str) -> tuple[str, str]:
     if mode == "state":
@@ -438,15 +447,63 @@ def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) ->
         return
 
 
+def draw_scrollbar(
+    stdscr: curses.window,
+    width: int,
+    height: int,
+    scroll: int,
+    visible_rows: int,
+    total_rows: int,
+    top: int,
+) -> None:
+    if width <= 0 or visible_rows <= 0 or total_rows <= visible_rows:
+        return
+
+    max_scroll = max(0, total_rows - visible_rows)
+    if max_scroll <= 0:
+        return
+
+    track_top = max(0, top)
+    track_bottom = min(height - 2, track_top + visible_rows - 1)
+    track_height = max(0, track_bottom - track_top + 1)
+    if track_height <= 0:
+        return
+
+    bar_height = max(1, round(visible_rows * visible_rows / total_rows))
+    bar_height = min(bar_height, track_height)
+    bar_range = max(0, track_height - bar_height)
+    thumb_top = track_top + (round(scroll * bar_range / max_scroll) if bar_range > 0 else 0)
+    thumb_bottom = min(track_bottom, thumb_top + bar_height - 1)
+
+    for y in range(track_top, track_bottom + 1):
+        try:
+            stdscr.addch(y, width - 1, "#" if thumb_top <= y <= thumb_bottom else "|")
+        except curses.error:
+            return
+
+
 def draw(stdscr: curses.window, app: App) -> None:
-    height, width = stdscr.getmaxyx()
-    visible_rows = repo_list_visible_rows(height, len(app.slots))
-    app.scroll_repos(0, visible_rows)
-    stdscr.erase()
-    for y, text, attr in build_view_lines(app, width, height, include_quit_hint=True):
-        line(stdscr, y, text, width, attr)
-    stdscr.noutrefresh()
-    curses.doupdate()
+    try:
+        height, width = stdscr.getmaxyx()
+        visible_rows = repo_list_visible_rows(height, len(app.slots))
+        app.scroll_repos(0, visible_rows)
+        stdscr.erase()
+        content_width = max(0, width - 1)
+        for y, text, attr in build_view_lines(app, content_width, height, include_quit_hint=True):
+            line(stdscr, y, text, content_width, attr)
+        draw_scrollbar(
+            stdscr,
+            width,
+            height,
+            app.repo_scroll,
+            visible_rows,
+            len(app.repos),
+            repo_section_top(len(app.slots)),
+        )
+        stdscr.noutrefresh()
+        curses.doupdate()
+    except curses.error:
+        return
 
 
 def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bool) -> list[tuple[int, str, int]]:
@@ -478,7 +535,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         header += f" | repos: {len(repos)} total; resize to view"
     lines.append((y, header, curses.A_BOLD))
     y += 1
-    lines.append((y, "-" * max(0, width - 1), 0))
+    lines.append((y, "-" * max(0, width), 0))
     y += 1
     lines.append((y, "Workers", curses.A_BOLD))
     y += 1
@@ -497,7 +554,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         lines.append((y, text, attr))
         y += 1
 
-    lines.append((y, "-" * max(0, width - 1), 0))
+    lines.append((y, "-" * max(0, width), 0))
     y += 1
     lines.append((y, "Repos", curses.A_BOLD))
     y += 1
@@ -512,11 +569,11 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         y += 1
 
     if height >= 2:
-        lines.append((height - 2, "-" * max(0, width - 1), 0))
+        lines.append((height - 2, "-" * max(0, width), 0))
 
     summary = f"Summary: queued={queued} running={running} done={done} skip={skipped}"
     if max_scroll > 0:
-        summary += "  scroll: up/down, page up/down, home/end, mouse wheel"
+        summary += "  scroll: up/down, page up/down, home/end"
     if include_quit_hint:
         summary += "  s:sort r:reverse q:quit"
     lines.append((height - 1, summary, curses.A_DIM))
@@ -574,6 +631,8 @@ def plain_run(app: App) -> None:
 
 
 def curses_run(app: App) -> None:
+    ui_poll_interval = 0.02
+
     def _main(stdscr: curses.window) -> None:
         try:
             curses.curs_set(0)
@@ -590,11 +649,6 @@ def curses_run(app: App) -> None:
             app.has_colors = True
         stdscr.nodelay(True)
         stdscr.keypad(True)
-        try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
-            curses.mouseinterval(0)
-        except curses.error:
-            pass
 
         workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
         for worker in workers:
@@ -607,23 +661,13 @@ def curses_run(app: App) -> None:
                 app.scroll_repos(0, visible_rows)
                 draw(stdscr, app)
 
-                ch = stdscr.getch()
+                try:
+                    ch = stdscr.getch()
+                except curses.error:
+                    time.sleep(ui_poll_interval)
+                    continue
                 if ch == curses.KEY_RESIZE:
                     continue
-                if ch == curses.KEY_MOUSE:
-                    try:
-                        _mouse_id, _mx, my, _mz, bstate = curses.getmouse()
-                    except curses.error:
-                        continue
-                    repo_start = 1 + 1 + 1 + len(app.slots) + 1 + 1
-                    repo_end = repo_start + visible_rows
-                    if repo_start <= my < repo_end:
-                        if bstate & getattr(curses, "BUTTON4_PRESSED", 0):
-                            app.scroll_repos(-1, visible_rows)
-                            continue
-                        if bstate & getattr(curses, "BUTTON5_PRESSED", 0):
-                            app.scroll_repos(1, visible_rows)
-                            continue
                 if ch == ord("s"):
                     app.cycle_sort_mode()
                     continue
@@ -637,10 +681,10 @@ def curses_run(app: App) -> None:
                     app.scroll_repos(1, visible_rows)
                     continue
                 if ch in (curses.KEY_PPAGE,):
-                    app.scroll_repos(-(max(1, visible_rows - 1)), visible_rows)
+                    app.scroll_repos(-page_scroll_step(visible_rows), visible_rows)
                     continue
                 if ch in (curses.KEY_NPAGE,):
-                    app.scroll_repos(max(1, visible_rows - 1), visible_rows)
+                    app.scroll_repos(page_scroll_step(visible_rows), visible_rows)
                     continue
                 if ch in (curses.KEY_HOME, ord("g")):
                     app.jump_repos(0, visible_rows)
@@ -652,13 +696,16 @@ def curses_run(app: App) -> None:
                     app.stop.set()
                     break
 
-                time.sleep(0.08)
+                time.sleep(ui_poll_interval)
         finally:
             app.stop.set()
             for worker in workers:
                 worker.join(timeout=1.0)
-            draw(stdscr, app)
-            time.sleep(0.2)
+            try:
+                draw(stdscr, app)
+            except curses.error:
+                pass
+            time.sleep(0.05)
 
     curses.wrapper(_main)
 
