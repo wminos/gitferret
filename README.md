@@ -3,10 +3,22 @@
 Recursively finds Git repositories in subfolders and pulls them in parallel, without descending into nested repos.
 This is not a full sync workflow and does not push local commits.
 
+![demo terminal run](docs/screenshot.png)
+
 ## Usage
+
+Run directly:
 
 ```bash
 python3 ./gitferret.py
+```
+
+Install and use globally:
+
+```bash
+./install.sh
+cd ~/source/repos
+gitferret
 ```
 
 ## When It Is Useful
