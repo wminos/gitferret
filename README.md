@@ -27,6 +27,7 @@ python3 ./gitferret.py
 - `s`: change sort mode
 - `r`: reverse sort order
 - `w`: toggle Workers rows
+- `a`: toggle autoquit
 - `h`: show help
 - `q`: quit
 - `Up` / `Down` or `k` / `j`: scroll the Repos list by one line

@@ -151,6 +151,7 @@ class Configs:
     sort_mode: str = "path"
     sort_reverse: bool = False
     show_workers: bool = False
+    autoquit: bool = False
 
     @classmethod
     def load(cls, path: Path) -> Configs:
@@ -169,6 +170,7 @@ class Configs:
             sort_mode=sort_mode,
             sort_reverse=bool(payload.get("sort_reverse", False)),
             show_workers=bool(payload.get("show_workers", False)),
+            autoquit=bool(payload.get("autoquit", False)),
         )
 
     def save(self, path: Path) -> None:
@@ -176,6 +178,7 @@ class Configs:
             "sort_mode": self.sort_mode,
             "sort_reverse": self.sort_reverse,
             "show_workers": self.show_workers,
+            "autoquit": self.autoquit,
         }
         try:
             path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -238,6 +241,10 @@ class App:
     def toggle_help(self) -> None:
         with self.lock:
             self.show_help = not self.show_help
+
+    def toggle_autoquit(self) -> None:
+        with self.lock:
+            self.configs.autoquit = not self.configs.autoquit
 
     def scroll_repos(self, delta: int, visible_rows: int) -> None:
         with self.lock:
@@ -509,6 +516,10 @@ def quit_hint(is_complete: bool) -> str:
     return "      "
 
 
+def app_is_complete(finished: int, total: int, active_workers: int) -> bool:
+    return total > 0 and finished >= total and active_workers == 0
+
+
 def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) -> None:
     if y < 0:
         return
@@ -572,6 +583,7 @@ def draw_help_popup(stdscr: curses.window, width: int, height: int) -> None:
         ("s", "change sort mode"),
         ("r", "reverse sort order"),
         ("w", "show or hide Workers rows"),
+        ("a", "toggle autoquit"),
         ("h/esc", "close help"),
         ("q", "quit"),
         ("up/down, k/j", "scroll Repos by one line"),
@@ -668,12 +680,13 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         active_workers = sum(1 for slot in slots if slot.repo_index is not None and slot.state != "idle")
         finished = app.finished
         total = app.total
+        autoquit = app.configs.autoquit
 
     name_width, branch_width, detail_width = compute_repo_row_widths(width, repos)
     visible_rows = repo_list_visible_rows(height, len(slots), show_workers)
     max_scroll = max(0, len(repos) - visible_rows)
     repo_scroll = min(max(repo_scroll, 0), max_scroll)
-    is_complete = total > 0 and finished >= total and active_workers == 0
+    is_complete = app_is_complete(finished, total, active_workers)
 
     lines: list[tuple[int, str, int]] = []
     y = 0
@@ -724,7 +737,8 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     if height >= 2:
         lines.append((height - 2, "-" * max(0, width), 0))
 
-    summary = f"h:help  {quit_hint(is_complete)}  summary: queued={queued} running={running} done={done} skip={skipped}"
+    autoquit_hint = "a:autoquit (on)" if autoquit else "a:autoquit"
+    summary = f"h:help  {autoquit_hint}  {quit_hint(is_complete)}  summary: queued={queued} running={running} done={done} skip={skipped}"
     lines.append((height - 1, summary, curses.A_DIM))
     return lines
 
@@ -812,6 +826,16 @@ def curses_run(app: App) -> None:
                 visible_rows = repo_list_visible_rows(height, len(app.slots), app.configs.show_workers)
                 app.scroll_repos(0, visible_rows)
                 draw(stdscr, app)
+                with app.lock:
+                    finished = app.finished
+                    total = app.total
+                    active_workers = sum(
+                        1 for slot in app.slots if slot.repo_index is not None and slot.state != "idle"
+                    )
+                    autoquit = app.configs.autoquit
+                if autoquit and app_is_complete(finished, total, active_workers):
+                    app.stop.set()
+                    break
 
                 try:
                     ch = stdscr.getch()
@@ -841,6 +865,9 @@ def curses_run(app: App) -> None:
                     app.toggle_workers()
                     visible_rows = repo_list_visible_rows(height, len(app.slots), app.configs.show_workers)
                     app.scroll_repos(0, visible_rows)
+                    continue
+                if ch == ord("a"):
+                    app.toggle_autoquit()
                     continue
                 if ch in (curses.KEY_UP, ord("k")):
                     app.scroll_repos(-1, visible_rows)
