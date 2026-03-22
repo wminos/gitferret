@@ -492,12 +492,21 @@ def page_scroll_step(visible_rows: int) -> int:
         return 1
     return max(1, visible_rows - 1)
 
+
 def repo_sort_key(repo: RepoState, mode: str) -> tuple[str, str]:
     if mode == "state":
         return (repo.state, repo.name)
     if mode == "branch":
         return (repo.branch or "", repo.name)
     return (repo.name, repo.state)
+
+
+def quit_hint(is_complete: bool) -> str:
+    if not is_complete:
+        return "q:quit"
+    if int(time.time() * 2) % 2 == 0:
+        return "q:quit"
+    return "      "
 
 
 def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) -> None:
@@ -657,11 +666,14 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
         done = sum(1 for repo in repo_indexed if repo.state == "done")
         skipped = sum(1 for repo in repo_indexed if repo.state == "skip")
         active_workers = sum(1 for slot in slots if slot.repo_index is not None and slot.state != "idle")
+        finished = app.finished
+        total = app.total
 
     name_width, branch_width, detail_width = compute_repo_row_widths(width, repos)
     visible_rows = repo_list_visible_rows(height, len(slots), show_workers)
     max_scroll = max(0, len(repos) - visible_rows)
     repo_scroll = min(max(repo_scroll, 0), max_scroll)
+    is_complete = total > 0 and finished >= total and active_workers == 0
 
     lines: list[tuple[int, str, int]] = []
     y = 0
@@ -712,7 +724,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     if height >= 2:
         lines.append((height - 2, "-" * max(0, width), 0))
 
-    summary = f"h:help  q:quit  summary: queued={queued} running={running} done={done} skip={skipped}"
+    summary = f"h:help  {quit_hint(is_complete)}  summary: queued={queued} running={running} done={done} skip={skipped}"
     lines.append((height - 1, summary, curses.A_DIM))
     return lines
 
