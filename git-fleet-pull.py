@@ -447,6 +447,15 @@ def line(stdscr: curses.window, y: int, text: str, width: int, attr: int = 0) ->
         return
 
 
+def dim_suffix(stdscr: curses.window, y: int, prefix: str, suffix: str, width: int) -> None:
+    if width <= len(prefix) or not suffix:
+        return
+    try:
+        stdscr.addnstr(y, len(prefix), truncate(suffix, width - len(prefix)), width - len(prefix), curses.A_DIM)
+    except curses.error:
+        return
+
+
 def draw_scrollbar(
     stdscr: curses.window,
     width: int,
@@ -491,6 +500,10 @@ def draw(stdscr: curses.window, app: App) -> None:
         content_width = max(0, width - 1)
         for y, text, attr in build_view_lines(app, content_width, height, include_quit_hint=True):
             line(stdscr, y, text, content_width, attr)
+            if text.startswith("Workers total: "):
+                dim_suffix(stdscr, y, "Workers", text[len("Workers") :], content_width)
+            elif text.startswith("Repos total: "):
+                dim_suffix(stdscr, y, "Repos", text[len("Repos") :], content_width)
         draw_scrollbar(
             stdscr,
             width,
@@ -537,7 +550,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     y += 1
     lines.append((y, "-" * max(0, width), 0))
     y += 1
-    lines.append((y, "Workers", curses.A_BOLD))
+    lines.append((y, f"Workers total: {len(slots)}", curses.A_BOLD))
     y += 1
 
     for slot in slots:
@@ -556,7 +569,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
 
     lines.append((y, "-" * max(0, width), 0))
     y += 1
-    lines.append((y, "Repos", curses.A_BOLD))
+    lines.append((y, f"Repos total: {len(repos)}", curses.A_BOLD))
     y += 1
 
     visible_repos = repos[repo_scroll : repo_scroll + visible_rows] if visible_rows > 0 else []
