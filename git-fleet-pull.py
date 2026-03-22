@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import curses
 import json
+import math
 import os
 import queue
 import subprocess
@@ -768,7 +769,7 @@ def plain_run(app: App) -> None:
 
 def curses_run(app: App) -> None:
     ui_poll_interval = 0.02
-    worker_join_timeout = 10.0
+    worker_join_timeout = math.inf
     shutdown_frames = "|/-\\"
     shutdown_frame_interval = 0.1
 
@@ -850,7 +851,6 @@ def curses_run(app: App) -> None:
                 time.sleep(ui_poll_interval)
         finally:
             app.stop.set()
-            shutdown_deadline = time.monotonic() + worker_join_timeout
             shutdown_frame_index = 0
             next_shutdown_frame_at = time.monotonic()
             while True:
@@ -864,11 +864,14 @@ def curses_run(app: App) -> None:
                         draw(stdscr, app)
                     except curses.error:
                         pass
-                if not alive_workers or time.monotonic() >= shutdown_deadline:
+                if not alive_workers:
                     break
-                remaining = shutdown_deadline - time.monotonic()
                 until_next_frame = max(0.0, next_shutdown_frame_at - time.monotonic())
-                join_slice = min(ui_poll_interval, remaining, until_next_frame if until_next_frame > 0 else ui_poll_interval)
+                join_slice = min(
+                    worker_join_timeout,
+                    ui_poll_interval,
+                    until_next_frame if until_next_frame > 0 else ui_poll_interval,
+                )
                 for worker in alive_workers:
                     worker.join(timeout=join_slice)
             try:
