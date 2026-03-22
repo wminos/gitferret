@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import curses
+import json
 import os
 import queue
 import subprocess
@@ -23,6 +24,7 @@ ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
 ANSI_CYAN = "\033[36m"
 ANSI_MAGENTA = "\033[35m"
+CONFIG_PATH = Path.home() / ".git-fleet-pull"
 
 
 def short_text(text: str) -> str:
@@ -143,13 +145,51 @@ class SlotState:
     updated_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class Configs:
+    sort_mode: str = "path"
+    sort_reverse: bool = False
+    show_workers: bool = False
+
+    @classmethod
+    def load(cls, path: Path) -> Configs:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return cls()
+        if not isinstance(payload, dict):
+            return cls()
+
+        sort_mode = payload.get("sort_mode", "path")
+        if sort_mode not in {"path", "state", "branch"}:
+            sort_mode = "path"
+
+        return cls(
+            sort_mode=sort_mode,
+            sort_reverse=bool(payload.get("sort_reverse", False)),
+            show_workers=bool(payload.get("show_workers", False)),
+        )
+
+    def save(self, path: Path) -> None:
+        data = {
+            "sort_mode": self.sort_mode,
+            "sort_reverse": self.sort_reverse,
+            "show_workers": self.show_workers,
+        }
+        try:
+            path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            return
+
+
 class App:
-    def __init__(self, root: Path, repos: list[Path]):
+    def __init__(self, root: Path, repos: list[Path], configs: Configs):
         self.root = root
         self.repos = [
             RepoState(index=i, path=repo, name=repo_display_name(root, repo))
             for i, repo in enumerate(repos)
         ]
+        self.configs = configs
         self.slots = [SlotState(index=i) for i in range(MAX_JOBS)]
         self.todo: queue.Queue[int] = queue.Queue()
         for i in range(len(self.repos)):
@@ -160,10 +200,7 @@ class App:
         self.total = len(self.repos)
         self.tempdir = Path(tempfile.mkdtemp(prefix="pull-all-repos-"))
         self.has_colors = False
-        self.sort_mode = "path"
-        self.sort_reverse = False
         self.repo_scroll = 0
-        self.show_workers = False
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -184,16 +221,16 @@ class App:
     def cycle_sort_mode(self) -> None:
         with self.lock:
             modes = ("path", "state", "branch")
-            current = modes.index(self.sort_mode)
-            self.sort_mode = modes[(current + 1) % len(modes)]
+            current = modes.index(self.configs.sort_mode)
+            self.configs.sort_mode = modes[(current + 1) % len(modes)]
 
     def toggle_sort_reverse(self) -> None:
         with self.lock:
-            self.sort_reverse = not self.sort_reverse
+            self.configs.sort_reverse = not self.configs.sort_reverse
 
     def toggle_workers(self) -> None:
         with self.lock:
-            self.show_workers = not self.show_workers
+            self.configs.show_workers = not self.configs.show_workers
 
     def scroll_repos(self, delta: int, visible_rows: int) -> None:
         with self.lock:
@@ -514,7 +551,7 @@ def draw_scrollbar(
 def draw(stdscr: curses.window, app: App) -> None:
     try:
         height, width = stdscr.getmaxyx()
-        visible_rows = repo_list_visible_rows(height, len(app.slots), app.show_workers)
+        visible_rows = repo_list_visible_rows(height, len(app.slots), app.configs.show_workers)
         app.scroll_repos(0, visible_rows)
         stdscr.erase()
         content_width = max(0, width - 1)
@@ -531,7 +568,7 @@ def draw(stdscr: curses.window, app: App) -> None:
             app.repo_scroll,
             visible_rows,
             len(app.repos),
-            repo_section_top(len(app.slots), app.show_workers),
+            repo_section_top(len(app.slots), app.configs.show_workers),
         )
         stdscr.noutrefresh()
         curses.doupdate()
@@ -543,10 +580,10 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     with app.lock:
         repo_indexed = list(app.repos)
         slots = list(app.slots)
-        sort_mode = app.sort_mode
-        sort_reverse = app.sort_reverse
+        sort_mode = app.configs.sort_mode
+        sort_reverse = app.configs.sort_reverse
         repo_scroll = app.repo_scroll
-        show_workers = app.show_workers
+        show_workers = app.configs.show_workers
         repos = sorted(repo_indexed, key=lambda repo: repo_sort_key(repo, sort_mode), reverse=sort_reverse)
         queued = sum(1 for repo in repo_indexed if repo.state == "queued")
         running = sum(1 for repo in repo_indexed if repo.state == "running")
@@ -624,8 +661,8 @@ def print_final_report(app: App) -> None:
     with app.lock:
         repos = sorted(
             app.repos,
-            key=lambda repo: repo_sort_key(repo, app.sort_mode),
-            reverse=app.sort_reverse,
+            key=lambda repo: repo_sort_key(repo, app.configs.sort_mode),
+            reverse=app.configs.sort_reverse,
         )
         repos = [repo for repo in repos if repo.state != "done"]
 
@@ -690,7 +727,7 @@ def curses_run(app: App) -> None:
         try:
             while True:
                 height, _width = stdscr.getmaxyx()
-                visible_rows = repo_list_visible_rows(height, len(app.slots), app.show_workers)
+                visible_rows = repo_list_visible_rows(height, len(app.slots), app.configs.show_workers)
                 app.scroll_repos(0, visible_rows)
                 draw(stdscr, app)
 
@@ -709,7 +746,7 @@ def curses_run(app: App) -> None:
                     continue
                 if ch == ord("w"):
                     app.toggle_workers()
-                    visible_rows = repo_list_visible_rows(height, len(app.slots), app.show_workers)
+                    visible_rows = repo_list_visible_rows(height, len(app.slots), app.configs.show_workers)
                     app.scroll_repos(0, visible_rows)
                     continue
                 if ch in (curses.KEY_UP, ord("k")):
@@ -759,7 +796,7 @@ def main(argv: list[str]) -> int:
         print(f"no git repositories found under: {root}")
         return 0
 
-    app = App(root, repos)
+    app = App(root, repos, Configs.load(CONFIG_PATH))
     try:
         if sys.stdout.isatty() and sys.stderr.isatty():
             try:
@@ -771,6 +808,7 @@ def main(argv: list[str]) -> int:
         else:
             plain_run(app)
     finally:
+        app.configs.save(CONFIG_PATH)
         app.cleanup()
     return 0
 
