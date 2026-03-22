@@ -25,7 +25,7 @@ ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
 ANSI_CYAN = "\033[36m"
 ANSI_MAGENTA = "\033[35m"
-CONFIG_PATH = Path.home() / ".git-fleet-pull"
+CONFIG_PATH = Path.home() / ".gitferret"
 
 
 def short_text(text: str) -> str:
@@ -666,7 +666,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     lines: list[tuple[int, str, int]] = []
     y = 0
     direction = "desc" if sort_reverse else "asc"
-    header = f"Git fleet pull | root: {app.root}"
+    header = f"gitferret | root: {app.root}"
     lines.append((y, header, curses.A_BOLD))
     y += 1
     lines.append((y, "-" * max(0, width), 0))
@@ -739,7 +739,7 @@ def print_final_report(app: App) -> None:
         print(ansi(message, ANSI_GREEN, ANSI_BOLD) if colored else message)
         return
 
-    header = f"Git fleet pull | root: {app.root}"
+    header = f"gitferret | root: {app.root}"
     print(ansi(header, ANSI_BOLD) if colored else header)
     print(ansi("-" * 72, ANSI_DIM) if colored else "-" * 72)
     for repo in repos:

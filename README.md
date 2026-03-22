@@ -1,4 +1,4 @@
-# Git fleet pull
+# gitferret
 
 Recursively finds Git repositories in subfolders and pulls them in parallel, without descending into nested repos.
 This is not a full sync workflow and does not push local commits.
@@ -6,7 +6,7 @@ This is not a full sync workflow and does not push local commits.
 ## Usage
 
 ```bash
-python3 ./git-fleet-pull.py
+python3 ./gitferret.py
 ```
 
 ## When It Is Useful
