@@ -202,6 +202,7 @@ class App:
         self.has_colors = False
         self.repo_scroll = 0
         self.shutdown_status = ""
+        self.show_help = False
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -232,6 +233,10 @@ class App:
     def toggle_workers(self) -> None:
         with self.lock:
             self.configs.show_workers = not self.configs.show_workers
+
+    def toggle_help(self) -> None:
+        with self.lock:
+            self.show_help = not self.show_help
 
     def scroll_repos(self, delta: int, visible_rows: int) -> None:
         with self.lock:
@@ -525,6 +530,51 @@ def right_text(stdscr: curses.window, y: int, text: str, width: int, attr: int =
         return
 
 
+def draw_help_popup(stdscr: curses.window, width: int, height: int) -> None:
+    title = "help"
+    shortcuts = [
+        ("s", "change sort mode"),
+        ("r", "reverse sort order"),
+        ("w", "show or hide Workers rows"),
+        ("h/esc", "close help"),
+        ("q", "quit"),
+        ("up/down, k/j", "scroll Repos by one line"),
+        ("pgup/pgdn", "scroll Repos by one page"),
+        ("home/end, g/G", "jump to top or bottom"),
+    ]
+    key_width = max(len(key) for key, _ in shortcuts)
+    desc_width = max(len(desc) for _, desc in shortcuts)
+    body_width = key_width + 3 + desc_width
+    popup_width = min(width - 4, max(len(title), body_width) + 6) if width >= 8 else width
+    popup_height = min(height - 2, len(shortcuts) + 3) if height >= 4 else height
+    if popup_width <= 0 or popup_height <= 0:
+        return
+    start_y = max(0, (height - popup_height) // 2)
+    start_x = max(0, (width - popup_width) // 2)
+    try:
+        for row in range(popup_height):
+            stdscr.addnstr(start_y + row, start_x, " " * popup_width, popup_width, curses.A_REVERSE)
+        stdscr.addnstr(
+            start_y + 1,
+            start_x + 2,
+            truncate(title, max(0, popup_width - 4)),
+            max(0, popup_width - 4),
+            curses.A_REVERSE | curses.A_BOLD,
+        )
+        visible_rows = max(0, popup_height - 3)
+        for idx, (key, desc) in enumerate(shortcuts[:visible_rows]):
+            text = f"{key:<{key_width}} | {desc}"
+            stdscr.addnstr(
+                start_y + 2 + idx,
+                start_x + 2,
+                truncate(text, max(0, popup_width - 4)),
+                max(0, popup_width - 4),
+                curses.A_REVERSE,
+            )
+    except curses.error:
+        return
+
+
 def draw_scrollbar(
     stdscr: curses.window,
     width: int,
@@ -584,6 +634,8 @@ def draw(stdscr: curses.window, app: App) -> None:
             len(app.repos),
             repo_section_top(len(app.slots), app.configs.show_workers),
         )
+        if app.show_help:
+            draw_help_popup(stdscr, content_width, height)
         stdscr.noutrefresh()
         curses.doupdate()
     except curses.error:
@@ -618,7 +670,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     y += 1
     lines.append((y, "-" * max(0, width), 0))
     y += 1
-    lines.append((y, f"Workers {active_workers} / {len(slots)} | w:show", curses.A_BOLD))
+    lines.append((y, f"Workers {active_workers} / {len(slots)}", curses.A_BOLD))
     y += 1
 
     if show_workers:
@@ -641,7 +693,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     lines.append(
         (
             y,
-            f"Repos total: {repo_range_label(repo_scroll, visible_rows, len(repos))} | s:sort r:reverse up/down pgup/dn home/end | sort: {sort_label(sort_mode)} {direction}",
+            f"Repos total: {repo_range_label(repo_scroll, visible_rows, len(repos))} | sort: {sort_label(sort_mode)} {direction}",
             curses.A_BOLD,
         )
     )
@@ -659,7 +711,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     if height >= 2:
         lines.append((height - 2, "-" * max(0, width), 0))
 
-    summary = f"q:quit  summary: queued={queued} running={running} done={done} skip={skipped}"
+    summary = f"h:help  q:quit  summary: queued={queued} running={running} done={done} skip={skipped}"
     lines.append((height - 1, summary, curses.A_DIM))
     return lines
 
@@ -755,6 +807,17 @@ def curses_run(app: App) -> None:
                     continue
                 if ch == curses.KEY_RESIZE:
                     continue
+                if ch in (ord("h"), ord("H"), ord("?")):
+                    app.toggle_help()
+                    continue
+                if ch == 27 and app.show_help:
+                    app.toggle_help()
+                    continue
+                if ch in (ord("q"), ord("Q")):
+                    app.stop.set()
+                    break
+                if app.show_help:
+                    continue
                 if ch == ord("s"):
                     app.cycle_sort_mode()
                     continue
@@ -784,10 +847,6 @@ def curses_run(app: App) -> None:
                 if ch in (curses.KEY_END, ord("G")):
                     app.jump_repos(len(app.repos), visible_rows)
                     continue
-                if ch in (ord("q"), ord("Q")):
-                    app.stop.set()
-                    break
-
                 time.sleep(ui_poll_interval)
         finally:
             app.stop.set()

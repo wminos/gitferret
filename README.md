@@ -27,6 +27,7 @@ python3 ./git-fleet-pull.py
 - `s`: change sort mode
 - `r`: reverse sort order
 - `w`: toggle Workers rows
+- `h`: show help
 - `q`: quit
 - `Up` / `Down` or `k` / `j`: scroll the Repos list by one line
 - `PageUp` / `PageDown`: scroll the Repos list by one page
