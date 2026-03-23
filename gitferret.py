@@ -269,6 +269,15 @@ class App:
             if not success and self.repos[idx].state == "running":
                 self.repos[idx].state = "skip"
 
+    def finalize_stopped_repos(self) -> None:
+        with self.lock:
+            now = time.time()
+            for repo in self.repos:
+                if repo.state == "queued":
+                    repo.state = "skip"
+                    repo.detail = "not started before quit"
+                    repo.finished_at = now
+
     def worker(self, slot_idx: int) -> None:
         while not self.stop.is_set():
             try:
@@ -913,6 +922,7 @@ def curses_run(app: App) -> None:
                 )
                 for worker in alive_workers:
                     worker.join(timeout=join_slice)
+            app.finalize_stopped_repos()
             try:
                 draw(stdscr, app)
             except curses.error:
