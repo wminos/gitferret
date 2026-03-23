@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "error: install.sh supports macOS only" >&2
+  echo "error: install.sh supports macOS only; use install.ps1 on Windows" >&2
   exit 1
 fi
 
