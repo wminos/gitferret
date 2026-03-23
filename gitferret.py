@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import curses
 import json
 import math
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-MAX_JOBS = max(1, os.cpu_count() or 1)
+MAX_JOBS = min(4, max(1, os.cpu_count() or 1))
 ANSI_RESET = "\033[0m"
 ANSI_BOLD = "\033[1m"
 ANSI_DIM = "\033[2m"
@@ -187,14 +188,15 @@ class Configs:
 
 
 class App:
-    def __init__(self, root: Path, repos: list[Path], configs: Configs):
+    def __init__(self, root: Path, repos: list[Path], configs: Configs, worker_count: int):
         self.root = root
         self.repos = [
             RepoState(index=i, path=repo, name=repo_display_name(root, repo))
             for i, repo in enumerate(repos)
         ]
         self.configs = configs
-        self.slots = [SlotState(index=i) for i in range(MAX_JOBS)]
+        self.worker_count = worker_count
+        self.slots = [SlotState(index=i) for i in range(worker_count)]
         self.todo: queue.Queue[int] = queue.Queue()
         for i in range(len(self.repos)):
             self.todo.put(i)
@@ -791,7 +793,7 @@ def print_final_report(app: App) -> None:
 
 
 def plain_run(app: App) -> None:
-    workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
+    workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(app.worker_count)]
     for worker in workers:
         worker.start()
     for worker in workers:
@@ -825,7 +827,7 @@ def curses_run(app: App) -> None:
         stdscr.nodelay(True)
         stdscr.keypad(True)
 
-        workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(MAX_JOBS)]
+        workers = [threading.Thread(target=app.worker, args=(i,), daemon=True) for i in range(app.worker_count)]
         for worker in workers:
             worker.start()
 
@@ -933,7 +935,12 @@ def curses_run(app: App) -> None:
 
 
 def main(argv: list[str]) -> int:
-    root = Path(argv[1] if len(argv) > 1 else ".").expanduser().resolve()
+    parser = argparse.ArgumentParser(prog="gitferret")
+    parser.add_argument("root", nargs="?", default=".", help="root folder to scan for git repositories")
+    parser.add_argument("-w", "--workers", type=int, help=f"worker count override (default: {MAX_JOBS})")
+    args = parser.parse_args(argv[1:])
+
+    root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         print(f"root not found: {root}", file=sys.stderr)
         return 1
@@ -943,7 +950,12 @@ def main(argv: list[str]) -> int:
         print(f"no git repositories found under: {root}")
         return 0
 
-    app = App(root, repos, Configs.load(CONFIG_PATH))
+    worker_count = args.workers if args.workers is not None else MAX_JOBS
+    if worker_count < 1:
+        print("worker count must be at least 1", file=sys.stderr)
+        return 1
+
+    app = App(root, repos, Configs.load(CONFIG_PATH), worker_count)
     try:
         if sys.stdout.isatty() and sys.stderr.isatty():
             try:
