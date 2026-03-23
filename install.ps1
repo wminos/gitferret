@@ -41,6 +41,14 @@ function Get-CurrentPythonRuntime {
     }
 
     if (Get-Command python -ErrorAction SilentlyContinue) {
+        $pythonCommand = Get-Command python
+        if ($pythonCommand.Source -match '\\\.pyenv\\pyenv-win\\shims\\python(?:\.bat)?$') {
+            $pyenvRuntime = Resolve-PyenvPythonRuntime
+            if ($pyenvRuntime) {
+                return $pyenvRuntime
+            }
+        }
+
         return [pscustomobject]@{
             Command = 'python'
             Arguments = @()
@@ -49,7 +57,46 @@ function Get-CurrentPythonRuntime {
         }
     }
 
+    $pyenvRuntime = Resolve-PyenvPythonRuntime
+    if ($pyenvRuntime) {
+        return $pyenvRuntime
+    }
+
     return $null
+}
+
+function Resolve-PyenvPythonRuntime {
+    $roots = @(
+        (Join-Path $env:USERPROFILE '.pyenv\pyenv-win\versions'),
+        (Join-Path $env:LOCALAPPDATA 'pyenv\pyenv-win\versions')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $candidates = foreach ($root in $roots) {
+        Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $candidatePath = Join-Path $_.FullName 'python.exe'
+            if (Test-Path $candidatePath) {
+                [pscustomobject]@{
+                    Path = (Get-Item $candidatePath).FullName
+                    Version = $_.Name
+                }
+            }
+        }
+    }
+
+    $candidate = $candidates |
+        Sort-Object @{ Expression = { [version]$_.Version }; Descending = $true }, @{ Expression = { $_.Path }; Descending = $true } |
+        Select-Object -First 1
+
+    if (-not $candidate) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Command = $candidate.Path
+        Arguments = @()
+        LauncherCommand = '"' + $candidate.Path + '"'
+        Source = 'pyenv'
+    }
 }
 
 function Find-WingetPythonPackage {
