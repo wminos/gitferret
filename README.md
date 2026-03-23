@@ -9,6 +9,7 @@ This is not a full sync workflow and does not push local commits.
 ## Usage
 
 By default, gitferret runs with up to `MIN(cpu cores, 4)` workers in parallel.
+
 If you want to force a different worker count, use the `-w` option.
 
 ### Run directly
