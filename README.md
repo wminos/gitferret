@@ -14,12 +14,14 @@ python3 ./gitferret.py
 ```
 
 Install and use globally:
+> macOS only. It may prompt for `sudo` to install into `/usr/local/bin`. This should be improved later.
 
 ```bash
 ./install.sh
 cd ~/source/repos
 gitferret
 ```
+
 
 ## When It Is Useful
 
