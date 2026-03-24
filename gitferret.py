@@ -29,6 +29,13 @@ ANSI_MAGENTA = "\033[35m"
 CONFIG_PATH = Path.home() / ".gitferret"
 
 
+class AlignedHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    def __init__(self, prog: str) -> None:
+        terminal_width = shutil.get_terminal_size(fallback=(88, 24)).columns
+        max_help_position = max(32, min(40, terminal_width // 2))
+        super().__init__(prog, max_help_position=max_help_position, width=terminal_width)
+
+
 def short_text(text: str) -> str:
     return " ".join(text.replace("\r", " ").replace("\n", " ").split())
 
@@ -935,9 +942,9 @@ def curses_run(app: App) -> None:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="gitferret")
+    parser = argparse.ArgumentParser(prog="gitferret", formatter_class=AlignedHelpFormatter)
     parser.add_argument("root", nargs="?", default=".", help="root folder to scan for git repositories")
-    parser.add_argument("-w", "--workers", type=int, help=f"worker count override (default: {MAX_JOBS})")
+    parser.add_argument("-w", "--workers", type=int, default=MAX_JOBS, help="worker count override")
     args = parser.parse_args(argv[1:])
 
     root = Path(args.root).expanduser().resolve()
