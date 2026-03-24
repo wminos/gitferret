@@ -14,6 +14,13 @@ If you want to force a different worker count, use the `-w` option.
 
 Use `--root` to set the scan root. You can also omit its value to fall back to the default root.
 
+The TUI stores its toggles in `settings.json`:
+
+- Windows: `%LOCALAPPDATA%\gitferret\settings.json`
+- macOS and Linux: `~/.gitferret`
+
+Saved settings include sort mode, reverse sort, worker rows visibility, and autoquit.
+
 ### Run directly
 
 ```bash
