@@ -261,7 +261,7 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-$installRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'gitferret'
+$installRoot = Join-Path $env:USERPROFILE '.gitferret'
 $binDir = Join-Path $installRoot 'bin'
 $targetPath = Join-Path $binDir 'gitferret.py'
 $launcherPath = Join-Path $binDir 'gitferret.cmd'
@@ -276,6 +276,7 @@ if (-not $isInstalled) {
     }
 }
 
+New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Copy-Item -Force $sourcePath $targetPath
 

@@ -30,12 +30,7 @@ DEFAULT_ROOT = "."
 
 
 def config_path() -> Path:
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA")
-        if base:
-            return Path(base) / "gitferret" / "settings.json"
-        return Path.home() / "AppData" / "Local" / "gitferret" / "settings.json"
-    return Path.home() / ".gitferret"
+    return Path.home() / ".gitferret" / "settings.json"
 
 
 CONFIG_PATH = config_path()

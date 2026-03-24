@@ -16,8 +16,8 @@ Use `--root` to set the scan root. You can also omit its value to fall back to t
 
 The TUI stores its toggles in `settings.json`:
 
-- Windows: `%LOCALAPPDATA%\gitferret\settings.json`
-- macOS and Linux: `~/.gitferret`
+- Windows: `%USERPROFILE%\.gitferret\settings.json`
+- macOS: `~/.gitferret/settings.json`
 
 Saved settings include sort mode, reverse sort, worker rows visibility, and autoquit.
 
