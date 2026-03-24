@@ -11,7 +11,8 @@ source_path="$script_dir/gitferret.py"
 install_root="$HOME/.gitferret"
 target_dir="$install_root/bin"
 target_path="$target_dir/gitferret"
-launcher_path="/usr/local/bin/gitferret"
+zprofile_path="$HOME/.zprofile"
+path_line='export PATH="$HOME/.gitferret/bin:$PATH"'
 
 read -r -p "install to $target_path? (y/N) " reply
 if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
@@ -23,25 +24,13 @@ mkdir -p "$target_dir"
 cp "$source_path" "$target_path"
 chmod 755 "$target_path"
 
-if [[ -e "$launcher_path" || -L "$launcher_path" ]]; then
-  if [[ -w "$(dirname "$launcher_path")" ]]; then
-    rm -f "$launcher_path"
-  elif sudo -n true 2>/dev/null; then
-    sudo rm -f "$launcher_path"
-  else
-    echo "$launcher_path requires admin permission."
-    echo "add $target_dir to PATH to run gitferret from this install."
-    exit 0
+if [[ -f "$zprofile_path" ]]; then
+  if ! grep -Fxq "$path_line" "$zprofile_path"; then
+    printf '\n%s\n' "$path_line" >> "$zprofile_path"
   fi
-fi
-if [[ -w "$(dirname "$launcher_path")" ]]; then
-  ln -s "$target_path" "$launcher_path"
-elif sudo -n true 2>/dev/null; then
-  sudo ln -s "$target_path" "$launcher_path"
 else
-  echo "$launcher_path requires admin permission."
-  echo "add $target_dir to PATH to run gitferret from this install."
-  exit 0
+  printf '%s\n' "$path_line" > "$zprofile_path"
 fi
 
 echo "installed: $target_path"
+echo "added PATH to: $zprofile_path"

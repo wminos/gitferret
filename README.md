@@ -43,6 +43,8 @@ python3 ./gitferret.py --root
 
 #### macOS
 
+`./install.sh` installs `~/.gitferret/bin/gitferret` and adds `~/.gitferret/bin` to `PATH` in `~/.zprofile`.
+
 ```bash
 ./install.sh
 cd <repo-root>
@@ -50,6 +52,8 @@ gitferret
 ```
 
 #### Windows
+
+`.\install.cmd` installs `%USERPROFILE%\.gitferret\bin\gitferret.py` and adds `%USERPROFILE%\.gitferret\bin` to `PATH`.
 
 ```powershell
 .\install.cmd
