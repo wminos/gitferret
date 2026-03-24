@@ -26,8 +26,19 @@ ANSI_GREEN = "\033[32m"
 ANSI_YELLOW = "\033[33m"
 ANSI_CYAN = "\033[36m"
 ANSI_MAGENTA = "\033[35m"
-CONFIG_PATH = Path.home() / ".gitferret"
 DEFAULT_ROOT = "."
+
+
+def config_path() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "gitferret" / "settings.json"
+        return Path.home() / "AppData" / "Local" / "gitferret" / "settings.json"
+    return Path.home() / ".gitferret"
+
+
+CONFIG_PATH = config_path()
 
 
 class AlignedHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -190,6 +201,7 @@ class Configs:
             "autoquit": self.autoquit,
         }
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         except OSError:
             return
