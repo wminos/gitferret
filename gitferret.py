@@ -27,6 +27,7 @@ ANSI_YELLOW = "\033[33m"
 ANSI_CYAN = "\033[36m"
 ANSI_MAGENTA = "\033[35m"
 CONFIG_PATH = Path.home() / ".gitferret"
+DEFAULT_ROOT = "."
 
 
 class AlignedHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -941,13 +942,28 @@ def curses_run(app: App) -> None:
     curses.wrapper(_main)
 
 
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="gitferret", formatter_class=AlignedHelpFormatter)
-    parser.add_argument("root", nargs="?", default=".", help="root folder to scan for git repositories")
+def main(argv: list[str], default_root: str | Path = DEFAULT_ROOT) -> int:
+    parser = argparse.ArgumentParser(
+        prog="gitferret",
+        usage="gitferret [--root [ROOT]] [-w WORKERS] [root]",
+        formatter_class=AlignedHelpFormatter,
+    )
+    parser.add_argument("root", nargs="?", default=argparse.SUPPRESS, help="root folder to scan for git repositories")
+    parser.add_argument(
+        "--root",
+        dest="root_flag",
+        nargs="?",
+        const=str(Path(default_root).expanduser()),
+        default=argparse.SUPPRESS,
+        metavar="ROOT",
+        help="root folder to scan for git repositories",
+    )
     parser.add_argument("-w", "--workers", type=int, default=MAX_JOBS, help="worker count override")
     args = parser.parse_args(argv[1:])
 
-    root = Path(args.root).expanduser().resolve()
+    default_root_text = str(Path(default_root).expanduser())
+    root_arg = getattr(args, "root_flag", getattr(args, "root", default_root_text))
+    root = Path(root_arg).expanduser().resolve()
     if not root.is_dir():
         print(f"root not found: {root}", file=sys.stderr)
         return 1
@@ -957,7 +973,7 @@ def main(argv: list[str]) -> int:
         print(f"no git repositories found under: {root}")
         return 0
 
-    worker_count = args.workers if args.workers is not None else MAX_JOBS
+    worker_count = args.workers
     if worker_count < 1:
         print("worker count must be at least 1", file=sys.stderr)
         return 1
