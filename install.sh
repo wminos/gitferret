@@ -14,8 +14,8 @@ target_path="$target_dir/gitferret"
 zprofile_path="$HOME/.zprofile"
 path_line='export PATH="$HOME/.gitferret/bin:$PATH"'
 
-read -r -p "install to $target_path? (y/N) " reply
-if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
+read -r -p "install to $target_path? (Y/n) " reply
+if [[ -n "$reply" && "$reply" != "y" && "$reply" != "Y" ]]; then
   echo "cancelled"
   exit 0
 fi

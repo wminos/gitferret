@@ -144,7 +144,8 @@ class RepoState:
     path: Path
     name: str
     state: str = "queued"
-    detail: str = "waiting"
+    state_msg: str = "waiting"
+    details: list[str] = field(default_factory=list)
     branch: str = ""
     slot: int | None = None
     started_at: float | None = None
@@ -292,7 +293,8 @@ class App:
             for repo in self.repos:
                 if repo.state == "queued":
                     repo.state = "skip"
-                    repo.detail = "not started before quit"
+                    repo.state_msg = "not started before quit"
+                    repo.details = []
                     repo.finished_at = now
 
     def worker(self, slot_idx: int) -> None:
@@ -305,12 +307,12 @@ class App:
             try:
                 repo = self.repos[repo_idx]
                 self.set_slot(slot_idx, repo_index=repo_idx, state="running", detail="starting", branch=repo.name)
-                self.set_repo(repo_idx, state="running", detail="scanning", slot=slot_idx, started_at=time.time())
+                self.set_repo(repo_idx, state="running", state_msg="scanning", details=[], slot=slot_idx, started_at=time.time())
 
                 probe = run_git(repo.path, "rev-parse", "--is-inside-work-tree")
                 if probe.returncode != 0 or short_text(probe.stdout) != "true":
                     detail = "not a git work tree; skip"
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
@@ -324,24 +326,24 @@ class App:
                 has_dirty_worktree = bool(short_text(dirty.stdout))
                 if has_dirty_worktree:
                     detail = explain_dirty(repo.path)
-                    self.set_repo(repo_idx, detail=detail)
+                    self.set_repo(repo_idx, state_msg=detail, details=[])
                     self.set_slot(slot_idx, detail=detail)
 
                 upstream = run_git(repo.path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
                 upstream_ref = short_text(upstream.stdout)
                 if upstream.returncode != 0 or not upstream_ref:
                     detail = explain_no_upstream()
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
 
-                self.set_repo(repo_idx, detail="fetching upstream")
+                self.set_repo(repo_idx, state_msg="fetching upstream", details=[])
                 self.set_slot(slot_idx, detail="fetching upstream")
                 fetch = run_git(repo.path, "fetch", "--prune", "--quiet")
                 if fetch.returncode != 0:
                     detail = explain_fetch_failed()
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
@@ -351,7 +353,7 @@ class App:
                     detail = "compare failed; retry later"
                     if compare.stderr:
                         detail = f"{detail}: {short_text(compare.stderr).split(':', 1)[0]}"
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
@@ -363,17 +365,21 @@ class App:
 
                 if ahead != 0:
                     detail = explain_ahead(ahead, behind)
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
                     continue
 
                 if behind == 0:
+                    details = ["local changes preserved"] if has_dirty_worktree else []
                     detail = explain_up_to_date()
-                    if has_dirty_worktree:
-                        detail = f"{detail}; local changes preserved"
-                    self.set_repo(repo_idx, state="done", detail=detail)
-                    self.set_slot(slot_idx, state="done", detail=detail)
+                    self.set_repo(
+                        repo_idx,
+                        state="done",
+                        state_msg=detail,
+                        details=details,
+                    )
+                    self.set_slot(slot_idx, state="done", detail=repo_detail_text(self.repos[repo_idx]))
                     self.mark_finished(repo_idx, success=True)
                     continue
 
@@ -381,7 +387,7 @@ class App:
                     pulling_detail = f"pulling with autostash ({behind} behind)"
                 else:
                     pulling_detail = f"pulling ff-only ({behind} behind)"
-                self.set_repo(repo_idx, detail=pulling_detail)
+                self.set_repo(repo_idx, state_msg=pulling_detail, details=[])
                 self.set_slot(slot_idx, detail=pulling_detail)
                 pull_args = ["pull", "--ff-only"]
                 if has_dirty_worktree:
@@ -391,7 +397,12 @@ class App:
                     detail = "pulled fast-forward; now synced"
                     if has_dirty_worktree:
                         detail = "pulled with autostash; now synced"
-                    self.set_repo(repo_idx, state="done", detail=detail)
+                    self.set_repo(
+                        repo_idx,
+                        state="done",
+                        state_msg=detail,
+                        details=[],
+                    )
                     self.set_slot(slot_idx, state="done", detail=detail)
                     self.mark_finished(repo_idx, success=True)
                 else:
@@ -400,12 +411,12 @@ class App:
                         detail = f"{detail}: autostash reapply conflicted"
                     if pull.stderr:
                         detail = f"{detail}: {short_text(pull.stderr).split(':', 1)[0]}"
-                    self.set_repo(repo_idx, state="skip", detail=detail)
+                    self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                     self.set_slot(slot_idx, state="skip", detail=detail)
                     self.mark_finished(repo_idx, success=False)
             except Exception as exc:  # noqa: BLE001
                 detail = f"error: {short_text(str(exc))}"
-                self.set_repo(repo_idx, state="skip", detail=detail)
+                self.set_repo(repo_idx, state="skip", state_msg=detail, details=[])
                 self.set_slot(slot_idx, state="skip", detail=detail)
                 self.mark_finished(repo_idx, success=False)
             finally:
@@ -532,6 +543,16 @@ def repo_sort_key(repo: RepoState, mode: str) -> tuple[str, str]:
     if mode == "branch":
         return (repo.branch or "", repo.name)
     return (repo.name, repo.state)
+
+
+def repo_detail_text(repo: RepoState) -> str:
+    if repo.details:
+        return f"{repo.state_msg}; {'; '.join(repo.details)}"
+    return repo.state_msg
+
+
+def should_include_in_final_report(repo: RepoState) -> bool:
+    return repo.state != "done" or bool(repo.details)
 
 
 def quit_hint(is_complete: bool) -> str:
@@ -734,7 +755,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
                 repo = repo_indexed[slot.repo_index]
                 name = truncate(repo.name, name_width)
                 branch = truncate(repo.branch, branch_width)
-                detail = truncate(repo.detail, detail_width)
+                detail = truncate(repo_detail_text(repo), detail_width)
                 text = f"[{slot.index + 1:02d}] {name:<{name_width}} {branch:<{branch_width}} {slot.state:<8} {detail:<{detail_width}}"
                 attr = style_for_state(slot.state)
             lines.append((y, text, attr))
@@ -755,7 +776,7 @@ def build_view_lines(app: App, width: int, height: int, *, include_quit_hint: bo
     for repo in visible_repos:
         name = truncate(repo.name, name_width)
         branch = truncate(repo.branch, branch_width)
-        detail = truncate(repo.detail, detail_width)
+        detail = truncate(repo_detail_text(repo), detail_width)
         text = f"[{repo.index + 1:02d}] {name:<{name_width}} {branch:<{branch_width}} {repo.state:<8} {detail:<{detail_width}}"
         lines.append((y, text, style_for_state(repo.state)))
         y += 1
@@ -783,7 +804,7 @@ def print_final_report(app: App) -> None:
             key=lambda repo: repo_sort_key(repo, app.configs.sort_mode),
             reverse=app.configs.sort_reverse,
         )
-        repos = [repo for repo in repos if repo.state != "done"]
+        repos = [repo for repo in repos if should_include_in_final_report(repo)]
 
     colored = use_ansi_output()
     if not repos:
@@ -796,13 +817,14 @@ def print_final_report(app: App) -> None:
     print(ansi("-" * 72, ANSI_DIM) if colored else "-" * 72)
     for repo in repos:
         branch = repo.branch or "-"
-        line = f"{repo.name} | {branch} | {repo.state} | {repo.detail}"
+        detail = repo_detail_text(repo)
+        line = f"{repo.name} | {branch} | {repo.state} | {detail}"
         if colored:
             line = (
                 f"{ansi(repo.name, ANSI_BOLD)} | "
                 f"{ansi(branch, ANSI_MAGENTA)} | "
                 f"{ansi_for_state(repo.state, repo.state)} | "
-                f"{ansi(repo.detail, ANSI_DIM)}"
+                f"{ansi(detail, ANSI_DIM)}"
             )
         print(line)
 
@@ -816,7 +838,7 @@ def plain_run(app: App) -> None:
 
     with app.lock:
         for repo in app.repos:
-            print(f"{repo.name}: {repo.state} - {repo.detail}")
+            print(f"{repo.name}: {repo.state} - {repo_detail_text(repo)}")
 
 
 def curses_run(app: App) -> None:
