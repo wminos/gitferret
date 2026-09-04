@@ -17,6 +17,7 @@ from gitferret.main import (
     repo_display_name,
     run_git,
     short_text,
+    shorten_path,
     truncate,
 )
 
@@ -78,6 +79,29 @@ def test_short_text_and_truncate():
     assert short_text("  hello\nworld\r! ") == "hello world !"
     assert truncate("hello world", 5) == "hell…"
     assert truncate("hi", 5) == "hi"
+
+
+def test_shorten_path():
+    # Short paths stay intact
+    assert shorten_path("repo1", 20) == "repo1"
+    assert shorten_path("group/repo1", 20) == "group/repo1"
+
+    # 3+ parts contract middle parts to '...'
+    long_p = "alpha/beta/gamma/delta/my_repo"
+    assert shorten_path(long_p, 25) == "alpha/beta/.../my_repo"
+    assert shorten_path(long_p, 18) == "alpha/.../my_repo"
+    assert shorten_path("_another_agentic/_agy/agy-2", 24) == "_another_ag.../.../agy-2"
+
+    # 2 parts shorten first directory
+    assert (
+        shorten_path("__external/Monolith Demo - World", 28)
+        == "__e.../Monolith Demo - World"
+    )
+
+    # Length invariant: result must never exceed max_width
+    for w in range(10, 40):
+        res = shorten_path("_another_agentic/_copilot/copilot-subagent-worker", w)
+        assert len(res) <= w
 
 
 def test_cli_help():
@@ -245,3 +269,27 @@ def test_explain_functions():
     assert "timed out" in explain_fetch_failed("git timed out after 20s")
     assert "timed out" in explain_fast_forward_failed("git timed out after 20s")
     assert "timed out" in explain_autostash_failed("git timed out after 20s")
+
+
+def test_dynamic_column_widths(tmp_path: Path):
+    async def run():
+        repo = tmp_path / "repo1"
+        (repo / ".git").mkdir(parents=True)
+        cfg = Configs()
+
+        engine = App(tmp_path, [repo], cfg, 1)
+        app = GitFerretApp(engine)
+        # Run on a wide terminal (136 cols, matching screenshot)
+        async with app.run_test(size=(136, 40)) as pilot:
+            table = app.query_one("#repo-table", DataTable)
+            widths = app._column_widths(table)
+            # Details should expand significantly beyond 36 when terminal is 136 wide
+            assert widths["details"] >= 50
+            assert widths["repo"] >= 30
+
+            # Resize to smaller terminal
+            await pilot.resize_terminal(80, 24)
+            widths_small = app._column_widths(table)
+            assert widths_small["details"] < widths["details"]
+
+    asyncio.run(run())

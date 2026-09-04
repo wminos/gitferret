@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from rich.text import Text
+from textual import events
 from textual.app import App as TextualApp
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets.data_table import ColumnKey
 
 MAX_JOBS = min(4, max(1, os.cpu_count() or 1))
 ANSI_RESET = "\033[0m"
@@ -62,7 +65,50 @@ def truncate(text: str, width: int) -> str:
     return text[: width - 1] + "…"
 
 
+def shorten_path(path: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if len(path) <= max_width:
+        return path
+
+    parts = path.split("/")
+    if len(parts) >= 3:
+        # Try keeping first and last directory components, replacing middle with '...'
+        candidate = f"{parts[0]}/.../{parts[-1]}"
+        if len(candidate) <= max_width:
+            for i in range(len(parts) - 2, 1, -1):
+                expanded = "/".join(parts[:i]) + "/.../" + parts[-1]
+                if len(expanded) <= max_width:
+                    return expanded
+            return candidate
+
+        needed_suffix = f"/.../{parts[-1]}"
+        avail_prefix = max_width - len(needed_suffix)
+        if avail_prefix >= 4:
+            return f"{parts[0][: avail_prefix - 3]}...{needed_suffix}"
+
+        if len(parts[-1]) + 4 <= max_width:
+            return f".../{parts[-1]}"
+
+        half = max(1, (max_width - 3) // 2)
+        return path[:half] + "..." + path[-(max_width - 3 - half) :]
+
+    if len(parts) == 2:
+        first, last = parts[0], parts[1]
+        needed_suffix = f"/{last}"
+        avail_first = max_width - len(needed_suffix)
+        if avail_first >= 4:
+            return f"{first[: avail_first - 3]}...{needed_suffix}"
+
+        half = max(1, (max_width - 3) // 2)
+        return path[:half] + "..." + path[-(max_width - 3 - half) :]
+
+    half = max(1, (max_width - 3) // 2)
+    return path[:half] + "..." + path[-(max_width - 3 - half) :]
+
+
 def explain_dirty(repo: Path) -> str:
+
     return f"local changes exist; trying autostash for {repo.name}"
 
 
@@ -697,21 +743,50 @@ class GitFerretApp(TextualApp[None]):
 
         return sorted(repos, key=key_fn, reverse=self.sort_reverse)
 
+    def _column_widths(self, table: DataTable) -> dict[str, int]:
+        table_width = max(0, table.size.width)
+        if table_width <= 0:
+            table_width = max(80, self.size.width)
+
+        overhead = len(self.TABLE_COLUMNS) * table.cell_padding * 2 + 2
+        width_budget = max(40, table_width - overhead)
+
+        no_width = 6
+        branch_width = 16
+        state_width = 10
+        fixed_sum = no_width + branch_width + state_width
+
+        remaining = max(40, width_budget - fixed_sum)
+        repo_width = max(28, min(50, int(remaining * 0.38)))
+        details_width = max(36, remaining - repo_width)
+
+        return {
+            "no": no_width,
+            "repo": repo_width,
+            "branch": branch_width,
+            "state": state_width,
+            "details": details_width,
+        }
+
     def _rebuild_table(self, table: DataTable | None = None) -> None:
         if table is None:
             table = self.query_one("#repo-table", DataTable)
+        saved_row = table.cursor_coordinate.row
+        widths = self._column_widths(table)
         table.clear(columns=True)
-        for key, (label, width) in self.TABLE_COLUMNS.items():
-            table.add_column(self._header_text(key, label), key=key, width=width)
+        for key, (label, _def_w) in self.TABLE_COLUMNS.items():
+            table.add_column(self._header_text(key, label), key=key, width=widths[key])
 
         sorted_repos = self._sort_rows()
         self._last_rendered_states.clear()
+        repo_col_width = widths["repo"]
         for repo in sorted_repos:
             row_style = self._style_for_state(repo.state)
             detail = repo_detail_text(repo)
+            display_name = shorten_path(repo.name, repo_col_width)
             table.add_row(
                 Text(f"{repo.index + 1:>5}", style=row_style),
-                Text(repo.name, style=row_style),
+                Text(display_name, style=row_style),
                 Text(repo.branch or "-", style=row_style),
                 Text(repo.state, style=row_style),
                 Text(detail, style=row_style),
@@ -719,7 +794,29 @@ class GitFerretApp(TextualApp[None]):
             )
             self._last_rendered_states[repo.index] = (repo.branch, repo.state, detail)
 
+        if table.row_count > 0:
+            table.move_cursor(row=min(saved_row, table.row_count - 1))
+
+    def on_resize(self, event: events.Resize) -> None:
+        try:
+            table = self.query_one("#repo-table", DataTable)
+        except NoMatches:
+            return
+        widths = self._column_widths(table)
+        col_repo = table.columns.get(ColumnKey("repo"))
+        col_details = table.columns.get(ColumnKey("details"))
+        if (
+            col_repo is not None
+            and col_details is not None
+            and (
+                col_repo.width != widths["repo"]
+                or col_details.width != widths["details"]
+            )
+        ):
+            self._rebuild_table(table)
+
     def _update_header_info(self) -> None:
+
         with self.engine.lock:
             active_workers = sum(
                 1
