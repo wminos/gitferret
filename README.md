@@ -6,39 +6,55 @@ This is not a full sync workflow and does not push local commits.
 
 ![demo terminal run](docs/screenshot.png)
 
-## Usage
+## Installation
 
-By default, gitferret runs with up to `MIN(cpu cores, 4)` workers in parallel.
-
-If you want to force a different worker count, use the `-w` option.
-
-### Run directly
-
-```bash
-python3 ./gitferret.py
-```
-
-```bash
-python3 ./gitferret.py -w 10
-```
-
-### Install and use globally
-
-#### macOS
-
+### macOS / Linux
 ```bash
 ./install.sh
-cd <repo-root>
-gitferret
 ```
 
-#### Windows
-
+### Windows
 ```powershell
-.\install.cmd
-cd <repo-root>
-gitferret
+pip install -e .
 ```
+
+## Running
+
+Run from any directory or repository root:
+
+```bash
+gitferret
+# or as a Git subcommand:
+git ferret
+```
+*(Tip: Use `git ferret -h` for help when calling via Git.)*
+
+## Options
+
+By default, `gitferret` runs with up to `MIN(cpu cores, 4)` workers in parallel.
+
+- `[root]` or `--root [ROOT]`: Target folder to scan (e.g. `gitferret ../repos`, defaults to `.`)
+- `-w WORKERS`: Override worker count (e.g. `gitferret -w 10`)
+
+Settings are automatically persisted in `settings.json`:
+- Windows: `%USERPROFILE%\.gitferret\settings.json`
+- macOS / Linux: `~/.gitferret/settings.json`
+
+Saved settings include sort mode, reverse sort, worker rows visibility, and autoquit.
+
+## Controls
+
+- `s`: cycle sort column (`NO` -> `REPO` -> `BRANCH` -> `STATE`)
+- `<` / `>`: step through sort column left / right
+- `r` or `Ctrl+R`: toggle sort direction (asc / desc)
+- `w`: toggle worker status panel
+- `a`: toggle autoquit
+- `Up` / `Down` or `k` / `j`: navigate repository list
+- `PageUp` / `PageDown`: scroll page up / down
+- `Home` / `End` or `g` / `G`: jump to top / bottom
+- `q` or `Ctrl+C`: quit
+- Click any table column header to sort by that column (or reverse direction)
+
 
 
 ## When It Is Useful
@@ -50,18 +66,10 @@ gitferret
 
 ## Potential Risks
 
-- This program runs `git fetch` and `git pull --ff-only` against discovered repositories, so it updates local repository state rather than only inspecting it
+- This program runs `git fetch` and `git pull --ff-only` against discovered repositories, updating local repository state
 - If a repository has local changes, the program may use `--autostash`, and some cases may still need manual review
 - Running this across many repositories may trigger many remote requests in a short time
 
-## Controls
+## Development
 
-- `s`: change sort mode
-- `r`: reverse sort order
-- `w`: toggle Workers rows
-- `a`: toggle autoquit
-- `h`: show help
-- `q`: quit
-- `Up` / `Down` or `k` / `j`: scroll the Repos list by one line
-- `PageUp` / `PageDown`: scroll the Repos list by one page
-- `Home` / `End` or `g` / `G`: jump to the top or bottom of the Repos list
+For local development setup, testing, and project architecture details, see the [Developer Guide](docs/development.md).

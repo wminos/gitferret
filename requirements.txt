@@ -1,0 +1,2 @@
+# pinned runtime dependencies
+textual==0.86.0

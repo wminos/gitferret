@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gitferret"
+description = "Recursively finds Git repositories in subfolders and pulls them in parallel"
+readme = "README.md"
+requires-python = ">=3.10"
+version = "0.1.0"
+license = { text = "MIT" }
+authors = [
+    { name = "Park Minu", email = "wminos@gmail.com" },
+]
+dependencies = [
+    "textual>=0.86.0",
+]
+
+[project.scripts]
+gitferret = "gitferret.main:main"
+git-ferret = "gitferret.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gitferret"]

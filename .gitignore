@@ -1,6 +1,34 @@
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
+*.so
+.Python
+.env
+.python-version
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter / local cache
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
-

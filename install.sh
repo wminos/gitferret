@@ -1,26 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "error: install.sh supports macOS only; use install.ps1 on Windows" >&2
-  exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "==> Setting up and installing gitferret globally..."
+make -C "$SCRIPT_DIR" install-global
+
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+
+# Verify PATH
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  echo ""
+  echo "Notice: $BIN_DIR is not found in your current PATH."
+  echo "Add the following line to your ~/.zprofile or ~/.bashrc to enable global access:"
+  echo "  export PATH=\"$BIN_DIR:\$PATH\""
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source_path="$script_dir/gitferret.py"
-target_dir="/usr/local/bin"
-target_path="$target_dir/gitferret"
-
-read -r -p "install to $target_path? (y/N) " reply
-if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
-  echo "cancelled"
-  exit 0
-fi
-if [[ ! -w "$target_dir" ]] && ! sudo -n true 2>/dev/null; then
-  echo "$target_dir requires admin permission."
-fi
-sudo mkdir -p "$target_dir"
-sudo cp "$source_path" "$target_path"
-sudo chmod 755 "$target_path"
-
-echo "installed: $target_path"
+echo ""
+echo "Installation complete!"
+echo "Global CLI commands available:"
+echo "  gitferret"
+echo "  git-ferret (or 'git ferret')"
