@@ -4,6 +4,17 @@ WORKDIR ?= $(CURDIR)
 ARGS ?=
 BIN_DIR ?= $(HOME)/.local/bin
 
+VENV_DIR := $(PROJECT_DIR)/.venv
+ifeq ($(OS),Windows_NT)
+VENV_BIN := $(VENV_DIR)/Scripts
+PIP_BIN := $(VENV_BIN)/pip.exe
+CLI_SUFFIX := .exe
+else
+VENV_BIN := $(VENV_DIR)/bin
+PIP_BIN := $(VENV_BIN)/pip
+CLI_SUFFIX :=
+endif
+
 .PHONY: start install-global uninstall-global
 
 start:
@@ -14,10 +25,10 @@ install-global:
 	@if [ ! -d "$(PROJECT_DIR)/.venv" ]; then \
 		$(PYTHON) -m venv "$(PROJECT_DIR)/.venv"; \
 	fi
-	@"$(PROJECT_DIR)/.venv/bin/pip" install -e "$(PROJECT_DIR)" --quiet
+	@"$(PIP_BIN)" install -e "$(PROJECT_DIR)" --quiet
 	@mkdir -p "$(BIN_DIR)"
-	@ln -sf "$(PROJECT_DIR)/.venv/bin/gitferret" "$(BIN_DIR)/gitferret"
-	@ln -sf "$(PROJECT_DIR)/.venv/bin/git-ferret" "$(BIN_DIR)/git-ferret"
+	@ln -sf "$(VENV_BIN)/gitferret$(CLI_SUFFIX)" "$(BIN_DIR)/gitferret"
+	@ln -sf "$(VENV_BIN)/git-ferret$(CLI_SUFFIX)" "$(BIN_DIR)/git-ferret"
 	@echo "Installed globally to $(BIN_DIR): gitferret, git-ferret (git ferret)"
 
 uninstall-global:
