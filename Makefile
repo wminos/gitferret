@@ -7,11 +7,11 @@ BIN_DIR ?= $(HOME)/.local/bin
 VENV_DIR := $(PROJECT_DIR)/.venv
 ifeq ($(OS),Windows_NT)
 VENV_BIN := $(VENV_DIR)/Scripts
-PIP_BIN := $(VENV_BIN)/pip.exe
+VENV_PYTHON := $(VENV_BIN)/python.exe
 CLI_SUFFIX := .exe
 else
 VENV_BIN := $(VENV_DIR)/bin
-PIP_BIN := $(VENV_BIN)/pip
+VENV_PYTHON := $(VENV_BIN)/python
 CLI_SUFFIX :=
 endif
 
@@ -22,10 +22,10 @@ start:
 	@cd "$(WORKDIR)" && $(PYTHON) -m gitferret $(ARGS)
 
 install-global:
-	@if [ ! -d "$(PROJECT_DIR)/.venv" ]; then \
+	@if [ ! -x "$(VENV_PYTHON)" ] || ! "$(VENV_PYTHON)" -c 'import sys' >/dev/null 2>&1; then \
 		$(PYTHON) -m venv "$(PROJECT_DIR)/.venv"; \
 	fi
-	@"$(PIP_BIN)" install -e "$(PROJECT_DIR)" --quiet
+	@"$(VENV_PYTHON)" -m pip install -e "$(PROJECT_DIR)" --quiet
 	@mkdir -p "$(BIN_DIR)"
 	@ln -sf "$(VENV_BIN)/gitferret$(CLI_SUFFIX)" "$(BIN_DIR)/gitferret"
 	@ln -sf "$(VENV_BIN)/git-ferret$(CLI_SUFFIX)" "$(BIN_DIR)/git-ferret"
