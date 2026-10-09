@@ -185,13 +185,16 @@ def run_git(
         )
 
 
-def discover_repos(root: Path) -> list[Path]:
+def discover_repos(root: Path, *, include_root: bool = False) -> list[Path]:
     repos: list[Path] = []
     if not root.is_dir():
         return repos
     for current, dirs, _files in os.walk(root):
         dirs.sort()
         current_path = Path(current)
+        if current_path == root and not include_root:
+            dirs[:] = [name for name in dirs if name != ".git"]
+            continue
         if (current_path / ".git").is_dir():
             repos.append(current_path)
             dirs[:] = []
@@ -1091,7 +1094,7 @@ def main(argv: list[str] | None = None, default_root: str | Path = DEFAULT_ROOT)
         argv = sys.argv
     parser = argparse.ArgumentParser(
         prog="gitferret",
-        usage="gitferret [--root [ROOT]] [-w WORKERS] [root]",
+        usage="gitferret [--root [ROOT]] [--include-root] [-w WORKERS] [root]",
         formatter_class=AlignedHelpFormatter,
     )
     parser.add_argument(
@@ -1110,6 +1113,11 @@ def main(argv: list[str] | None = None, default_root: str | Path = DEFAULT_ROOT)
         help="root folder to scan for git repositories",
     )
     parser.add_argument(
+        "--include-root",
+        action="store_true",
+        help="include the root folder itself when scanning for git repositories",
+    )
+    parser.add_argument(
         "-w", "--workers", type=int, default=MAX_JOBS, help="worker count override"
     )
     args = parser.parse_args(argv[1:])
@@ -1121,7 +1129,7 @@ def main(argv: list[str] | None = None, default_root: str | Path = DEFAULT_ROOT)
         print(f"root not found: {root}", file=sys.stderr)
         return 1
 
-    repos = discover_repos(root)
+    repos = discover_repos(root, include_root=args.include_root)
     if not repos:
         print(f"no git repositories found under: {root}")
         return 0

@@ -75,6 +75,52 @@ def test_discover_repos(tmp_path: Path):
     assert repos[1] == repo_b
 
 
+@pytest.mark.parametrize("include_root", [False, True])
+def test_discover_repos_root_repository(tmp_path: Path, include_root: bool):
+    child = tmp_path / "group" / "child"
+    (child / ".git").mkdir(parents=True)
+    (child / "nested" / ".git").mkdir(parents=True)
+    (tmp_path / ".git" / "internal" / ".git").mkdir(parents=True)
+
+    expected = [tmp_path] if include_root else [child]
+    assert discover_repos(tmp_path, include_root=include_root) == expected
+
+
+def test_discover_repos_excludes_root_by_default(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    assert discover_repos(tmp_path) == []
+
+
+def test_discover_repos_include_non_repository_root(tmp_path: Path):
+    child = tmp_path / "child"
+    (child / ".git").mkdir(parents=True)
+    assert discover_repos(tmp_path, include_root=True) == [child]
+
+
+@pytest.mark.parametrize("include_root", [False, True])
+def test_cli_include_root(tmp_path: Path, monkeypatch, include_root: bool):
+    import importlib
+
+    main_module = importlib.import_module("gitferret.main")
+    child = tmp_path / "child"
+    (child / ".git").mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    processed = []
+    monkeypatch.setattr(main_module, "CONFIG_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(main_module.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        main_module, "plain_run", lambda engine: processed.extend(engine.repos)
+    )
+    args = ["gitferret", str(tmp_path)]
+    if include_root:
+        args.append("--include-root")
+
+    assert main(args) == 0
+    assert [repo.path for repo in processed] == (
+        [tmp_path] if include_root else [child]
+    )
+
+
 def test_short_text_and_truncate():
     assert short_text("  hello\nworld\r! ") == "hello world !"
     assert truncate("hello world", 5) == "hell…"

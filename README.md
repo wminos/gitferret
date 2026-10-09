@@ -34,7 +34,18 @@ git ferret
 By default, `gitferret` runs with up to `MIN(cpu cores, 4)` workers in parallel.
 
 - `[root]` or `--root [ROOT]`: Target folder to scan (e.g. `gitferret ../repos`, defaults to `.`)
+- `--include-root`: Include the target folder itself as a possible repository (excluded by default)
 - `-w WORKERS`: Override worker count (e.g. `gitferret -w 10`)
+
+By default, only repositories in subfolders are processed, even if the target
+folder is a repository. Its `.git` directory is never searched. Once a repository
+is found in a subfolder, its children are not searched. With `--include-root`,
+if the target folder is a repository, only that repository is processed.
+
+```bash
+gitferret ../repos                 # Scan subfolders only
+gitferret --include-root           # Process the current folder if it is a repository
+```
 
 Settings are automatically persisted in `settings.json`:
 - Windows: `%USERPROFILE%\.gitferret\settings.json`
