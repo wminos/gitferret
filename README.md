@@ -60,6 +60,8 @@ Saved settings include sort mode, reverse sort, worker rows visibility, and auto
 - `r` or `Ctrl+R`: toggle sort direction (asc / desc)
 - `w`: toggle worker status panel
 - `a`: toggle autoquit
+- `Enter`: open the selected repository in the file manager (in a graphical session)
+- `c`: open the selected repository in VS Code (in a graphical session with `code` on PATH)
 - `Up` / `Down` or `k` / `j`: navigate repository list
 - `PageUp` / `PageDown`: scroll page up / down
 - `Home` / `End` or `g` / `G`: jump to top / bottom

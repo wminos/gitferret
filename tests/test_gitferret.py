@@ -202,6 +202,119 @@ def test_gitferret_app_keybindings(tmp_path: Path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("platform", "key", "command"),
+    [("win32", "enter", "explorer"), ("darwin", "enter", "open"),
+     ("linux", "enter", "xdg-open"), ("win32", "c", "code")],
+)
+def test_open_selected_repository(tmp_path: Path, monkeypatch, platform, key, command):
+    import importlib
+    from types import SimpleNamespace
+
+    main_module = importlib.import_module("gitferret.main")
+
+    async def run():
+        repos = [tmp_path / "z-repo", tmp_path / "a repo"]
+        engine = App(tmp_path, repos, Configs(), 0)
+        launches = []
+        monkeypatch.setattr(main_module, "sys", SimpleNamespace(platform=platform))
+        monkeypatch.setattr(main_module, "gui_available", lambda: True)
+        monkeypatch.setattr(main_module.shutil, "which", lambda name: name)
+        monkeypatch.setattr(main_module.subprocess, "Popen", lambda args: launches.append(args))
+        app = GitFerretApp(engine)
+        async with app.run_test() as pilot:
+            await pilot.press(key)
+            assert launches == [[command, str(repos[1].resolve())]]
+        engine.cleanup()
+
+    asyncio.run(run())
+
+
+def test_vscode_binding_hidden_when_code_is_missing(tmp_path: Path, monkeypatch):
+    import importlib
+
+    main_module = importlib.import_module("gitferret.main")
+    monkeypatch.setattr(main_module, "gui_available", lambda: True)
+    monkeypatch.setattr(main_module.shutil, "which", lambda name: None)
+
+    async def run():
+        engine = App(tmp_path, [tmp_path / "repo"], Configs(), 0)
+        app = GitFerretApp(engine)
+        async with app.run_test() as pilot:
+            assert "c" not in app.active_bindings
+            await pilot.press("c")
+        engine.cleanup()
+
+    asyncio.run(run())
+
+
+def test_gui_bindings_hidden_without_graphical_session(tmp_path: Path, monkeypatch):
+    import importlib
+
+    main_module = importlib.import_module("gitferret.main")
+    monkeypatch.setattr(main_module, "gui_available", lambda: False)
+    monkeypatch.setattr(main_module.shutil, "which", lambda name: name)
+    launches = []
+    monkeypatch.setattr(main_module.subprocess, "Popen", lambda args: launches.append(args))
+
+    async def run():
+        engine = App(tmp_path, [tmp_path / "repo"], Configs(), 0)
+        app = GitFerretApp(engine)
+        async with app.run_test() as pilot:
+            assert "c" not in app.active_bindings
+            assert all(binding.binding.action != "open_file_manager" for binding in app.active_bindings.values())
+            await pilot.press("enter", "c")
+            assert not launches
+        engine.cleanup()
+
+    asyncio.run(run())
+
+
+def test_open_shortcuts_appear_last(tmp_path: Path, monkeypatch):
+    import importlib
+    from textual.widgets._footer import FooterKey
+
+    main_module = importlib.import_module("gitferret.main")
+    monkeypatch.setattr(main_module, "gui_available", lambda: True)
+    monkeypatch.setattr(main_module.shutil, "which", lambda name: name)
+
+    async def run():
+        engine = App(tmp_path, [], Configs(), 0)
+        app = GitFerretApp(engine)
+        async with app.run_test():
+            actions = [key.action for key in app.query(FooterKey)]
+            assert actions[-2:] == ["open_file_manager", "open_vscode"]
+        engine.cleanup()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("environment, expected", [({}, False), ({"DISPLAY": ":0"}, True),
+    ({"WAYLAND_DISPLAY": "wayland-0"}, True), ({"WAYLAND_SOCKET": "3"}, True)])
+def test_linux_gui_detection(monkeypatch, environment, expected):
+    import importlib
+    from types import SimpleNamespace
+
+    main_module = importlib.import_module("gitferret.main")
+    monkeypatch.setattr(main_module, "sys", SimpleNamespace(platform="linux"))
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert main_module.gui_available() is expected
+
+
+@pytest.mark.parametrize("session, expected", [("Aqua\n", True), ("Background\n", False)])
+def test_macos_gui_detection(monkeypatch, session, expected):
+    import importlib
+    from types import SimpleNamespace
+
+    main_module = importlib.import_module("gitferret.main")
+    monkeypatch.setattr(main_module, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(main_module.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=session))
+    assert main_module.gui_available() is expected
+
+
 def test_gitferret_app_header_selected(tmp_path: Path):
     from rich.text import Text
     from textual.widgets.data_table import ColumnKey

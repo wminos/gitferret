@@ -35,6 +35,45 @@ ANSI_MAGENTA = "\033[35m"
 DEFAULT_ROOT = "."
 
 
+def gui_available() -> bool:
+    """Best-effort check for a graphical session accessible to this process."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class UserObjectFlags(ctypes.Structure):
+            _fields_ = [("inherit", wintypes.BOOL), ("reserved", wintypes.BOOL),
+                        ("flags", wintypes.DWORD)]
+
+        try:
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetProcessWindowStation.restype = wintypes.HANDLE
+            user32.GetUserObjectInformationW.argtypes = [
+                wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            flags = UserObjectFlags()
+            station = user32.GetProcessWindowStation()
+            return bool(station and user32.GetUserObjectInformationW(
+                station, 1, ctypes.byref(flags), ctypes.sizeof(flags), None
+            ) and flags.flags & 1)
+        except (OSError, AttributeError):
+            return False
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["launchctl", "managername"], capture_output=True, text=True,
+                timeout=2, check=False,
+            )
+            return result.returncode == 0 and result.stdout.strip() == "Aqua"
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                    or os.environ.get("WAYLAND_SOCKET"))
+    return False
+
+
 def config_path() -> Path:
     return Path.home() / ".gitferret" / "settings.json"
 
@@ -598,6 +637,14 @@ def plain_run(app: App) -> None:
 SortKey = Literal["no", "repo", "branch", "state"]
 
 
+class ShortcutFooter(Footer):
+    def compose(self) -> ComposeResult:
+        widgets = list(super().compose())
+        open_actions = {"open_file_manager", "open_vscode"}
+        yield from (widget for widget in widgets if getattr(widget, "action", None) not in open_actions)
+        yield from (widget for widget in widgets if getattr(widget, "action", None) in open_actions)
+
+
 class GitFerretApp(TextualApp[None]):
     """Interactive TUI for gitferret repository synchronizer."""
 
@@ -648,6 +695,7 @@ class GitFerretApp(TextualApp[None]):
         Binding("pageup", "page_up", "Page Up", show=False),
         Binding("pagedown", "page_down", "Page Down", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
+        Binding("enter", "open_file_manager", "Open folder", priority=True),
     ]
 
     SORT_KEYS: tuple[SortKey, ...] = ("no", "repo", "branch", "state")
@@ -667,6 +715,9 @@ class GitFerretApp(TextualApp[None]):
 
     def __init__(self, engine: App) -> None:
         super().__init__()
+        self.gui_available = gui_available()
+        if self.gui_available and shutil.which("code"):
+            self.bind("c", "open_vscode", description="Open in VS Code")
         self.engine = engine
         self.worker_threads: list[threading.Thread] = []
         initial_key = (
@@ -684,6 +735,11 @@ class GitFerretApp(TextualApp[None]):
         self._last_worker_state: tuple[object, ...] | None = None
         self._last_summary_state: tuple[object, ...] | None = None
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "open_file_manager":
+            return self.gui_available
+        return super().check_action(action, parameters)
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("", id="header-info")
@@ -692,7 +748,7 @@ class GitFerretApp(TextualApp[None]):
             id="repo-table", show_row_labels=False, show_cursor=True, cursor_type="row"
         )
         yield Static("", id="summary")
-        yield Footer()
+        yield ShortcutFooter()
 
     def on_mount(self) -> None:
         table = self.query_one("#repo-table", DataTable)
@@ -1022,6 +1078,36 @@ class GitFerretApp(TextualApp[None]):
             self._rebuild_table()
             self._last_summary_state = None
             self._update_summary()
+
+    def _selected_repo_path(self) -> Path | None:
+        table = self.query_one("#repo-table", DataTable)
+        if not table.row_count:
+            self.notify("No repository selected", severity="warning")
+            return None
+        row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        return self.engine.repos[int(str(row_key.value))].path.resolve()
+
+    def _open_selected_repo(self, command: str) -> None:
+        path = self._selected_repo_path()
+        if path is None:
+            return
+        executable = shutil.which(command)
+        if executable is None:
+            self.notify(f"Could not find {command}", severity="error")
+            return
+        try:
+            subprocess.Popen([executable, str(path)])
+        except OSError as exc:
+            self.notify(f"Could not open {path}: {exc}", severity="error")
+
+    def action_open_file_manager(self) -> None:
+        command = "explorer" if sys.platform == "win32" else (
+            "open" if sys.platform == "darwin" else "xdg-open"
+        )
+        self._open_selected_repo(command)
+
+    def action_open_vscode(self) -> None:
+        self._open_selected_repo("code")
 
     def action_cursor_down(self) -> None:
         self.query_one("#repo-table", DataTable).action_cursor_down()
